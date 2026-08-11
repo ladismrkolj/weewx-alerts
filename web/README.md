@@ -29,22 +29,36 @@ minimum, a per-user secret link instead of a bare name) -- don't just port-forwa
 ## Deploying behind nginx with a password
 
 `deploy/` has a ready-made setup for running this on a public-facing station server, mounted
-at `/alerts/` behind nginx with HTTP basic auth in front (since the app itself has none):
+behind nginx with HTTP basic auth in front (since the app itself has none). Where it's mounted
+and where it listens is configured once, in `weewx.conf`, not hand-copied into nginx:
 
-- `deploy/useralerts-web.service` -- systemd unit that runs the panel as a background service,
-  bound to `127.0.0.1:8081` only (so nginx is the sole entry point).
-- `deploy/nginx-alerts.conf` -- nginx `location` block for `/alerts/`, with `auth_basic` and a
-  reverse proxy to that loopback port.
+```ini
+[UserAlerts]
+    [[Web]]
+        url_path = /alerts                        # mount point behind the reverse proxy
+        host = 127.0.0.1                           # loopback only -- nginx is the public entry point
+        port = 8081
+        htpasswd_file = /etc/nginx/.htpasswd_alerts # consumed by gen_nginx_conf.py only
+```
 
-Both files have install steps in their own header comments. In short: copy the systemd unit
-(editing its paths for your install), `systemctl enable --now` it, create an
-`htpasswd`-generated password file, paste the nginx block into your existing site's `server {}`,
-then `nginx -t && systemctl reload nginx`. Do this over HTTPS -- basic auth sends credentials
-base64-encoded, not encrypted, on every request.
+- `useralerts_web.py` reads `host`/`port` from here as defaults (a CLI `--host`/`--port` still
+  overrides, so `./serve-panel.sh` keeps working with no `[[Web]]` section at all).
+- `deploy/useralerts-web.service` -- systemd unit that runs the panel as a background service.
+  It only needs `--config`; host/port come from `weewx.conf` as above.
+- `deploy/gen_nginx_conf.py --config /path/to/weewx.conf` -- prints the nginx `location` block
+  for `url_path`, wired to `host`:`port` and `auth_basic_user_file htpasswd_file`. Don't
+  hand-write this block or copy one from an old deployment; regenerate it (and
+  `nginx -t && systemctl reload nginx`) any time `[[Web]]` changes, so nginx can never drift out
+  of sync with what the app is actually bound to or what path it's meant to sit behind.
+
+Both files have full install steps in their own header comments. In short: create the
+`htpasswd` password file, `systemctl enable --now` the unit, paste `gen_nginx_conf.py`'s output
+into your existing site's `server {}` block, reload nginx. Do this over HTTPS -- basic auth
+sends credentials base64-encoded, not encrypted, on every request.
 
 The app itself already knows how to sit behind a proxy like this (see the `ProxyFix` wiring in
 `useralerts_web.py`), so `url_for()`-generated links/forms/redirects correctly come out under
-`/alerts/...` instead of pointing back at the un-prefixed root.
+`url_path` instead of pointing back at the un-prefixed root.
 
 ## How it works
 

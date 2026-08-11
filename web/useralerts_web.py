@@ -17,6 +17,22 @@ Security model: NO PASSWORD. Typing a name opens or creates that config.
 This is only safe on a trusted home/LAN deployment -- see web/README.md
 before ever exposing this beyond your own network.
 
+Configuration: reads weewx.conf's [UserAlerts] section (users_dir,
+state_dir, default_telegram_bot_token) plus an optional [[Web]]
+sub-section for this panel specifically:
+
+    [UserAlerts]
+        [[Web]]
+            url_path = /alerts   # informational -- must match nginx's mount
+            host = 127.0.0.1     # default for --host if not passed on the CLI
+            port = 8081          # default for --port if not passed on the CLI
+            htpasswd_file = /etc/nginx/.htpasswd_alerts  # read only by deploy/gen_nginx_conf.py
+
+--host/--port on the command line always win over weewx.conf; both are
+optional to keep `./serve-panel.sh` (no [[Web]] section needed) working.
+See web/deploy/ for turning [[Web]] into a running, password-protected
+nginx-fronted deployment.
+
 Usage:
     python3 useralerts_web.py --config /path/to/weewx.conf [--host H] [--port P]
 """
@@ -498,25 +514,34 @@ def main():
     parser = argparse.ArgumentParser(description="UserAlerts config web panel")
     parser.add_argument('--config', dest='config_path', metavar='CONFIG_FILE',
                          help='Path to weewx.conf')
-    parser.add_argument('--host', default='0.0.0.0')
-    parser.add_argument('--port', type=int, default=8081)
+    # No defaults here for --host/--port: None means "not passed on the CLI",
+    # so weewx.conf's [UserAlerts][[Web]] host/port (see module docstring)
+    # can supply them instead, without one silently overriding the other.
+    parser.add_argument('--host', default=None)
+    parser.add_argument('--port', type=int, default=None)
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
 
     import weecfg
     config_path, config_dict = weecfg.read_config(args.config_path, [])
     ua_dict = config_dict.get('UserAlerts', {})
+    web_dict = ua_dict.get('Web', {})
     root = config_dict.get('WEEWX_ROOT', '.')
     USERS_DIR = os.path.join(root, ua_dict.get('users_dir', 'user/useralerts/users'))
     os.makedirs(USERS_DIR, exist_ok=True)
     DEFAULT_BOT_TOKEN = ua_dict.get('default_telegram_bot_token', '')
+
+    host = args.host or web_dict.get('host', '0.0.0.0')
+    port = args.port or int(web_dict.get('port', 8081))
+    url_path = web_dict.get('url_path', '/')
 
     db_path, table_name = resolve_archive_db_path(config_dict)
     ARCHIVE_FIELDS = fetch_archive_fields(db_path, table_name)
     ALL_UNITS = list_all_units()
 
     print("Using configuration file %s" % config_path)
-    print("Serving users_dir '%s' on http://%s:%s" % (USERS_DIR, args.host, args.port))
+    print("Serving users_dir '%s' on http://%s:%s (mount point when proxied: %s)"
+          % (USERS_DIR, host, port, url_path))
     if DEFAULT_BOT_TOKEN:
         print("Telegram connect form will default to the configured station bot token")
     if ARCHIVE_FIELDS:
@@ -526,7 +551,7 @@ def main():
               "falling back to a generic field list" % (db_path or 'no SQLite db found'))
     if ALL_UNITS:
         print("Cheatsheet: listing %d valid unit names" % len(ALL_UNITS))
-    app.run(host=args.host, port=args.port, threaded=True, debug=args.debug)
+    app.run(host=host, port=port, threaded=True, debug=args.debug)
 
 
 if __name__ == '__main__':
