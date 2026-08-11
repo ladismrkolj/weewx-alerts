@@ -89,9 +89,13 @@ through a browser instead of by hand, and for linking a Telegram bot (paste a to
 code) without running `tools/get_chat_id.py` yourself. It reads the same `[UserAlerts]` section
 above -- nothing to configure twice.
 
-See [web/README.md](web/README.md) for running it, its security model (**no password by
-default** -- read this before it's reachable beyond your own LAN), and `web/deploy/` for a
-ready-made nginx + basic-auth + systemd setup for a public-facing station server.
+See [web/README.md](web/README.md) for running it and its security model (**no password by
+default** -- read this before it's reachable beyond your own LAN). For a public-facing station
+server, `web/deploy/` has a ready-made nginx + basic-auth + systemd setup: `sudo
+web/deploy/install.sh --config /path/to/weewx.conf --htpasswd-user someuser` does the whole
+install in one command (venv, deps, systemd unit, password file, nginx config generation);
+[web/README.md](web/README.md) also has the exact manual steps if you'd rather not run that
+script.
 
 ## Uninstalling
 
