@@ -1,0 +1,41 @@
+# systemd unit for the UserAlerts config web panel (useralerts_web.py).
+#
+# Installs the panel as a background service that starts on boot and
+# restarts if it crashes, bound to localhost only -- nginx is what actually
+# faces the internet (TLS + basic auth), see nginx-alerts.conf next to this
+# file.
+#
+# Install:
+#   sudo cp useralerts-web.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now useralerts-web
+#
+# Adjust the paths below (User/Group, WorkingDirectory, ExecStart, --config)
+# to match your actual install layout first -- these placeholders mirror a
+# typical `weectl station create` layout where WeeWX runs as user "weewx"
+# out of /home/weewx.
+
+[Unit]
+Description=UserAlerts config web panel
+Documentation=https://github.com/ladismrkolj/weewx-alerts
+After=network.target
+
+[Service]
+Type=simple
+User=weewx
+Group=weewx
+WorkingDirectory=/home/weewx/weewx-alerts/web
+ExecStart=/home/weewx/venv/bin/python3 /home/weewx/weewx-alerts/web/useralerts_web.py \
+    --config /home/weewx/weewx-data/weewx.conf \
+    --host 127.0.0.1 --port 8081
+Restart=on-failure
+RestartSec=5
+
+# Light sandboxing -- safe defaults for a small Flask app that only needs to
+# read/write files under UserAlerts' users_dir.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

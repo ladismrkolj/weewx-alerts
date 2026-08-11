@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% block title %}{{ display_name }} - UserAlerts{% endblock %}
+{% block content %}
+<p><a href="{{ url_for('index') }}">&larr; switch user</a></p>
+<h1>{{ display_name }}</h1>
+
+<section class="card">
+  <h2>Telegram</h2>
+
+  {% if pending %}
+    <p>Open Telegram and tap <strong>Start</strong> in the chat with your bot to finish connecting:</p>
+    <p><a class="btn" href="{{ deep_link }}" target="_blank" rel="noopener">Open @{{ pending.username }} in Telegram</a></p>
+    <p class="muted">Or scan this from another device:</p>
+    <img class="qr" src="{{ qr_data_uri }}" alt="QR code that opens the bot chat in Telegram">
+    <p class="muted">
+      If you've already chatted with this bot before, tapping Start won't send the code
+      automatically -- instead just send the bot this message:
+      <code>{{ pending.code }}</code>
+    </p>
+    <p id="telegram-status"
+       data-poll-url="{{ url_for('telegram_status', user_id=user_id) }}"
+       data-redirect-url="{{ url_for('dashboard', user_id=user_id) }}">
+      Waiting for you to tap Start&hellip;
+    </p>
+  {% elif show_connect_form %}
+    <form method="post" action="{{ url_for('telegram_connect', user_id=user_id) }}">
+      <p class="muted">
+        1. In Telegram, message <strong>@BotFather</strong> &rarr; <code>/newbot</code> &rarr;
+        copy the token it gives you.<br>
+        2. Paste that token below.
+      </p>
+      <label>Bot token
+        <input type="text" name="bot_token" value="{{ default_bot_token }}"
+               placeholder="123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" required>
+      </label>
+      {% if default_bot_token %}
+      <p class="muted">Pre-filled with the station's shared bot -- just hit Connect, or
+        replace it with a different token if you'd rather use your own bot.</p>
+      {% endif %}
+      <button type="submit">Connect</button>
+      {% if telegram_connected %}
+      <a class="btn-secondary" href="{{ url_for('dashboard', user_id=user_id) }}">Cancel</a>
+      {% endif %}
+    </form>
+  {% else %}
+    <p>
+      Connected
+      {% if telegram_info.get('username') %}to <strong>@{{ telegram_info.username }}</strong>{% endif %}
+      via bot token <code>{{ masked_token }}</code>.
+    </p>
+    <p>
+      <a href="{{ url_for('dashboard', user_id=user_id, telegram='edit') }}">Change / reconnect&hellip;</a>
+      <span class="muted">(links a different bot or Telegram account -- a new phone on the
+      same Telegram account already just works, nothing to do)</span>
+    </p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Alerts</h2>
+  {% if alerts %}
+  <table class="alerts-table">
+    <thead><tr><th>id</th><th>expression</th><th>channels</th><th>time_wait</th><th></th></tr></thead>
+    <tbody>
+      {% for a in alerts %}
+      <tr>
+        <td>{{ a.id }}</td>
+        <td><code>{{ a.expression }}</code></td>
+        <td>{{ a.channels|join(', ') }}</td>
+        <td>{{ a.time_wait }}</td>
+        <td>
+          <a href="{{ url_for('dashboard', user_id=user_id, edit=a.id) }}">Edit</a>
+          <form method="post" action="{{ url_for('delete_alert', user_id=user_id) }}"
+                class="inline-form" onsubmit="return confirm('Delete alert {{ a.id }}?');">
+            <input type="hidden" name="id" value="{{ a.id }}">
+            <button type="submit" class="link-btn">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No alerts yet.</p>
+  {% endif %}
+
+  {% if not edit_alert %}
+  <p><a class="btn" href="{{ url_for('dashboard', user_id=user_id, edit='new') }}">+ Add alert</a></p>
+  {% endif %}
+</section>
+
+{% if edit_alert %}
+<section class="card">
+  <h2>{{ 'Add alert' if edit_id == 'new' else 'Edit alert' }}</h2>
+
+  <details class="help">
+    <summary>Expression &amp; template cheatsheet</summary>
+    <div class="help-body">
+      <h3>Expression</h3>
+      <p class="muted">Plain Python, evaluated against the current archive record. Any
+        exception (bad syntax, wrong type, ...) is treated as "didn't trigger" -- it never
+        crashes the alert.</p>
+      <ul>
+        <li><strong>Fields</strong> -- any field in the current archive record, by name.
+          Using one that isn't present just means the alert quietly doesn't fire that round,
+          it never errors.
+          {% if archive_fields %}
+          Your station's archive table actually has:
+          <div class="field-chips">
+            {% for name, unit in archive_fields %}
+            <code>{{ name }}{% if unit %} <span class="unit">{{ unit }}</span>{% endif %}</code>
+            {% endfor %}
+          </div>
+          {% else %}
+          Common ones: <code>outTemp</code>, <code>windSpeed</code>, <code>windGust</code>,
+          <code>windDir</code>, <code>barometer</code>, <code>rain</code>,
+          <code>rainRate</code>, <code>dewpoint</code>, <code>outHumidity</code>,
+          <code>inTemp</code>, <code>UV</code>, <code>radiation</code>, <code>dateTime</code>
+          -- exact set depends on your station's schema.
+          {% endif %}
+        </li>
+        <li><strong>Aggregates</strong> -- <code>avg(obs, minutes)</code>,
+          <code>amin(obs, minutes)</code>, <code>amax(obs, minutes)</code>,
+          <code>asum(obs, minutes)</code>: rolling aggregate over the trailing window ending
+          at this record's time, read straight from the archive. <code>None</code> if there's
+          no data in that window. Add <code>unit='C'</code> (or any unit from the list below)
+          to convert the result, e.g. <code>amax('outTemp', 30, unit='C')</code> for the
+          30-minute max in Celsius -- note <code>to_C(amax(...))</code> does <strong>not</strong>
+          work, the aggregate only returns a bare number by then with no field name attached
+          to say what unit it's in, which is exactly what the <code>unit=</code> kwarg is for.</li>
+        <li><strong>Units</strong> -- fields are stored in whatever unit system
+          weewx.conf is configured for, so a raw comparison like <code>outTemp &lt; 0</code>
+          silently means different things on a US-unit vs metric station. To pin an
+          expression to a specific unit regardless of that setting, convert first:
+          <code>to_C(obs)</code>, <code>to_F(obs)</code>, <code>to_kts(obs)</code>,
+          <code>to_mps(obs)</code> convert that field's current value to Celsius /
+          Fahrenheit / knots / meters-per-second. For any other unit, use the general form
+          <code>convert(obs, unit_name)</code> -- e.g. <code>convert('barometer', 'hPa')</code>,
+          <code>convert('rain', 'mm')</code>. All return <code>None</code> (never an error) for
+          a missing field or a unit that doesn't apply to that field's type (e.g.
+          <code>to_kts('outTemp')</code>). To convert a number you already have instead of the
+          record's raw value, pass it as a third argument:
+          <code>to_kts('windSpeed', avg('windSpeed', 30))</code> -- or just use the
+          aggregates' own <code>unit=</code> kwarg above, it's the same thing but shorter.
+          {% if all_units %}
+          Every valid unit name (what to pass as <code>unit_name</code>/<code>unit=</code>):
+          <div class="field-chips">
+            {% for name, label in all_units %}
+            <code>{{ name }}{% if label %} <span class="unit">{{ label }}</span>{% endif %}</code>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </li>
+        <li><strong>Safe builtins</strong> -- <code>abs()</code>, <code>round()</code>,
+          <code>min()</code>, <code>max()</code>, <code>len()</code></li>
+        <li><strong>Constants</strong> -- <code>True</code>, <code>False</code>,
+          <code>None</code></li>
+        <li><strong>Comparisons / logic</strong> --
+          <code>&lt;</code> <code>&gt;</code> <code>&lt;=</code> <code>&gt;=</code>
+          <code>==</code> <code>!=</code> <code>and</code> <code>or</code> <code>not</code>
+          <code>is</code> <code>is not</code></li>
+        <li><strong>Examples</strong><br>
+          <code>outTemp &lt; 32.0</code><br>
+          <code>avg('windSpeed', 30) is not None and avg('windSpeed', 30) &gt; 20</code><br>
+          <code>to_C('outTemp') is not None and to_C('outTemp') &lt; 0</code><br>
+          <code>to_kts('windGust') is not None and to_kts('windGust') &gt; 25</code><br>
+          <code>amax('outTemp', 30, unit='C') is not None and amax('outTemp', 30, unit='C') &lt; 0</code></li>
+      </ul>
+      <h3>Template</h3>
+      <p class="muted">Plain Python <code>str.format()</code> syntax, filled in with every
+        field from the current record, plus two extras: <code>{dateTime_str}</code>
+        (human-readable time) and <code>{alert_id}</code>. A typo'd field name is left
+        as literal text (e.g. <code>{oops}</code>) instead of crashing the send.</p>
+      <p><strong>Examples</strong><br>
+        <code>Freeze warning! outTemp={outTemp:.1f}F at {dateTime_str}</code><br>
+        <code>Alert {alert_id} fired: windSpeed={windSpeed}</code></p>
+    </div>
+  </details>
+
+  <form method="post" action="{{ url_for('save_alert', user_id=user_id) }}">
+    <input type="hidden" name="orig_id" value="{{ '' if edit_id == 'new' else edit_id }}">
+    <label>id
+      <input type="text" name="id" value="{{ edit_alert.id }}" required pattern="[A-Za-z0-9_\-]+">
+    </label>
+    <label>expression
+      <textarea name="expression" rows="2" required>{{ edit_alert.expression }}</textarea>
+    </label>
+    <label>template
+      <textarea name="template" rows="2" required>{{ edit_alert.template }}</textarea>
+    </label>
+    <fieldset>
+      <legend>channels</legend>
+      {% for ch in available_channels %}
+      <label class="checkbox">
+        <input type="checkbox" name="channels" value="{{ ch }}"
+               {% if ch in edit_alert.channels %}checked{% endif %}> {{ ch }}
+      </label>
+      {% endfor %}
+    </fieldset>
+    <label>time_wait (seconds)
+      <input type="number" name="time_wait" min="0" value="{{ edit_alert.time_wait }}">
+    </label>
+    <button type="submit">Save</button>
+    <a class="btn-secondary" href="{{ url_for('dashboard', user_id=user_id) }}">Cancel</a>
+  </form>
+</section>
+{% endif %}
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+{% endblock %}

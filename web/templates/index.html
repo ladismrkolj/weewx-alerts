@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}UserAlerts{% endblock %}
+{% block content %}
+<h1>Weather alerts</h1>
+<p>Enter your name to open or create your alert config.</p>
+<form method="post" action="{{ url_for('open_user') }}" class="name-form">
+  <input type="text" name="name" placeholder="Your name" autofocus required>
+  <button type="submit">Continue</button>
+</form>
+
+{% if users %}
+<h2>Or reopen an existing one</h2>
+<ul class="user-list">
+  {% for u in users %}
+  <li><a href="{{ url_for('dashboard', user_id=u.user_id) }}">{{ u.display_name }}</a></li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

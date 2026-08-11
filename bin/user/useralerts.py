@@ -63,7 +63,7 @@
 #     {
 #       "id": "wind_gust_avg",
 #       "expression": "avg('windSpeed', 30) is not None and avg('windSpeed', 30) > 20",
-#       "template": "Sustained wind! 30-min avg windSpeed={windSpeed}, gust now={windGust}",
+#       "template": "Sustained wind! 30-min avg was {avg('windSpeed', 30, unit='kts'):.1f} kts, gust now {to_kts('windGust'):.1f} kts",
 #       "channels": ["telegram"],
 #       "time_wait": 1800
 #     }
@@ -71,25 +71,54 @@
 # }
 #
 # --------------------------------------------------------------------------
-# Expression language
+# Expression language -- shared by "expression" AND by each {...} placeholder
+# inside "template" (see "Template language" below)
 #
 #   - Any field in the current archive record is available by name directly,
-#     e.g. outTemp, windSpeed, dateTime, ...
+#     e.g. outTemp, windSpeed, dateTime, ... Raw field values are already in
+#     whatever unit system weewx.conf's [StdConvert] target_unit is set to
+#     (US/METRIC/METRICWX) -- that's the unit archive records are stored in.
 #   - avg(obs, minutes) / amin(obs, minutes) / amax(obs, minutes) / asum(obs, minutes)
 #     compute a rolling aggregate ending at the current record's dateTime,
 #     read straight from the archive database. Returns None if there is no
-#     data in that window.
+#     data in that window. Same unit system as the raw field, unless you
+#     pass unit=..., e.g. amax('outTemp', 30, unit='C') for the 30-minute
+#     max in Celsius regardless of the station's configured unit system.
+#   - to_C(obs) / to_F(obs) / to_kts(obs) / to_mps(obs) convert a field's
+#     *current* value to Celsius / Fahrenheit / knots / meters-per-second,
+#     regardless of the station's configured unit system -- handy for a
+#     fixed-unit threshold (e.g. "always alert at 0 C") or for a unit
+#     (knots) that isn't one of weewx's three standard target_unit systems.
+#     Returns None if the field is missing or the conversion doesn't apply
+#     (e.g. to_kts() on a temperature field).
+#   - convert(obs, unit_name) is the general form behind those four --
+#     any weewx unit name works, e.g. convert('barometer', 'hPa'),
+#     convert('rain', 'mm'). Optionally convert(obs, unit_name, value) to
+#     convert an explicit value (e.g. an avg()/amax() result without using
+#     its unit= kwarg) instead of the current record's, using obs only to
+#     look up its unit group.
 #   - A small set of safe builtins are available: abs, round, min, max, len
+#   - dateTime_str (human readable time of the record) and alert_id are also
+#     available -- handy inside a template placeholder, e.g. {dateTime_str}.
 #   - Expressions that reference a missing field, or that raise any
 #     exception, are logged and simply treated as "not triggered" for that
-#     pass; they never crash the service or affect other alerts/users.
+#     pass (in "expression") or left as the literal "{original text}" (in a
+#     template placeholder); they never crash the service or affect other
+#     alerts/users.
 #
 # Template language
 #
-#   - Plain str.format() syntax against a dict of: every field in the
-#     current archive record, plus dateTime_str (human readable time) and
-#     alert_id. Missing fields are left as literal "{field}" rather than
-#     raising, so a typo in a template never crashes a send.
+#   - Each {...} in a template is evaluated at send time as an expression in
+#     the language above -- not just a field name. A plain field still works
+#     the same as before, e.g. {outTemp}, but so does a function call, e.g.
+#     {avg('windSpeed', 30, unit='kts')} or {to_kts('windGust')}.
+#   - Optionally follow the expression with ':' and a str.format() format
+#     spec, e.g. {avg('windSpeed', 30, unit='kts'):.1f} or {outTemp:.1f}.
+#   - {{ and }} are literal braces, same as str.format().
+#   - If a placeholder's expression raises (missing field, bad syntax, ...),
+#     that one placeholder is left as the literal "{original text}" rather
+#     than raising, so a typo or a transient missing field never crashes a
+#     send -- everything else in the template still renders normally.
 #
 # --------------------------------------------------------------------------
 
@@ -106,6 +135,7 @@ import urllib.request
 from email.mime.text import MIMEText
 
 import weewx
+import weewx.units
 from weeutil.weeutil import timestamp_to_string, to_bool
 from weewx.engine import StdService
 
@@ -123,15 +153,6 @@ SAFE_BUILTINS = {
 }
 
 
-class SafeFormatDict(dict):
-    """A dict that leaves '{missing_key}' untouched in str.format_map()
-    instead of raising a KeyError, so a bad template field never crashes
-    a send."""
-
-    def __missing__(self, key):
-        return '{' + key + '}'
-
-
 def _validate_obs_name(obs):
     """Guard against anything but a plain identifier being interpolated
     into SQL for the avg/amin/amax/asum helpers."""
@@ -140,16 +161,51 @@ def _validate_obs_name(obs):
     return obs
 
 
+# Named unit shortcuts usable anywhere a unit name is expected (to_C(),
+# convert(obs, unit=...), the aggregate functions' unit= kwarg, ...) -- the
+# handful of units alert authors are likely to want by name regardless of
+# the station's configured unit system. Any actual weewx unit name (e.g.
+# 'hPa', 'mm', 'inHg') works too, this is just convenient shorthand for four
+# common ones.
+NAMED_UNITS = {'C': 'degree_C', 'F': 'degree_F',
+               'kts': 'knot', 'mps': 'meter_per_second'}
+
+
+def _convert_value(unit_system, obs, value, unit_name):
+    """Convert `value` -- assumed to already be obs's value under
+    unit_system (a weewx.US/METRIC/METRICWX constant) -- to unit_name
+    (either a NAMED_UNITS shortcut or any real weewx unit name). obs is
+    used only to look up its unit group, e.g. 'windSpeed' -> group_speed.
+    Returns None (never raises) if anything about that doesn't apply --
+    missing value, unknown unit_system, or a unit_name that isn't valid for
+    obs's group (e.g. converting a temperature field to knots)."""
+    if value is None or unit_system is None:
+        return None
+    obs = _validate_obs_name(obs)
+    unit_name = NAMED_UNITS.get(unit_name, unit_name)
+    try:
+        src_unit, src_group = weewx.units.getStandardUnitType(unit_system, obs)
+        if src_unit is None:
+            return None
+        vt = weewx.units.ValueTuple(value, src_unit, src_group)
+        return weewx.units.convert(vt, unit_name)[0]
+    except (KeyError, TypeError, ValueError) as e:
+        log.debug("Could not convert %s to %s: %s", obs, unit_name, e)
+        return None
+
+
 class Aggregator:
     """Builds the avg()/amin()/amax()/asum() functions bound to a specific
-    db_manager and a specific 'as of' timestamp (the current record's
-    dateTime), for use inside an alert expression's eval namespace."""
+    db_manager, a specific 'as of' timestamp (the current record's
+    dateTime), and that record's unit system (for the optional unit=
+    conversion), for use inside an alert expression's eval namespace."""
 
-    def __init__(self, db_manager, end_ts):
+    def __init__(self, db_manager, end_ts, unit_system=None):
         self.db_manager = db_manager
         self.end_ts = end_ts
+        self.unit_system = unit_system
 
-    def _aggregate(self, sql_func, obs, minutes):
+    def _aggregate(self, sql_func, obs, minutes, unit=None):
         obs = _validate_obs_name(obs)
         minutes = float(minutes)
         start_ts = self.end_ts - minutes * 60.0
@@ -161,23 +217,61 @@ class Aggregator:
             log.debug("Aggregate query failed for %s(%s, %s min): %s",
                        sql_func, obs, minutes, e)
             return None
-        return row[0] if row and row[0] is not None else None
+        value = row[0] if row and row[0] is not None else None
+        if unit is not None and value is not None:
+            value = _convert_value(self.unit_system, obs, value, unit)
+        return value
 
-    def avg(self, obs, minutes):
-        return self._aggregate('AVG', obs, minutes)
+    def avg(self, obs, minutes, unit=None):
+        return self._aggregate('AVG', obs, minutes, unit)
 
-    def amin(self, obs, minutes):
-        return self._aggregate('MIN', obs, minutes)
+    def amin(self, obs, minutes, unit=None):
+        return self._aggregate('MIN', obs, minutes, unit)
 
-    def amax(self, obs, minutes):
-        return self._aggregate('MAX', obs, minutes)
+    def amax(self, obs, minutes, unit=None):
+        return self._aggregate('MAX', obs, minutes, unit)
 
-    def asum(self, obs, minutes):
-        return self._aggregate('SUM', obs, minutes)
+    def asum(self, obs, minutes, unit=None):
+        return self._aggregate('SUM', obs, minutes, unit)
 
     def as_namespace(self):
         return {'avg': self.avg, 'amin': self.amin,
                 'amax': self.amax, 'asum': self.asum}
+
+
+class UnitConverter:
+    """Builds the to_C()/to_F()/to_kts()/to_mps()/convert() functions bound
+    to a specific archive record, for use inside an alert expression's eval
+    namespace. Each converts a field's value out of whatever unit system the
+    record was stored in (record['usUnits']) into a specific target unit,
+    independent of the station's configured [StdConvert] target_unit --
+    e.g. to_C('outTemp') always means Celsius, even on a US-unit station."""
+
+    def __init__(self, record):
+        self.record = record
+
+    def convert(self, obs, unit_name, value=None):
+        obs = _validate_obs_name(obs)
+        if value is None:
+            value = self.record.get(obs)
+        return _convert_value(self.record.get('usUnits'), obs, value, unit_name)
+
+    def to_C(self, obs, value=None):
+        return self.convert(obs, 'C', value)
+
+    def to_F(self, obs, value=None):
+        return self.convert(obs, 'F', value)
+
+    def to_kts(self, obs, value=None):
+        return self.convert(obs, 'kts', value)
+
+    def to_mps(self, obs, value=None):
+        return self.convert(obs, 'mps', value)
+
+    def as_namespace(self):
+        return {'to_C': self.to_C, 'to_F': self.to_F,
+                'to_kts': self.to_kts, 'to_mps': self.to_mps,
+                'convert': self.convert}
 
 
 class Channels:
@@ -243,16 +337,79 @@ class Channels:
     }
 
 
-def render_template(template, record, alert_id):
-    ctx = SafeFormatDict(record)
-    ctx['alert_id'] = alert_id
-    if 'dateTime' in record:
-        ctx['dateTime_str'] = timestamp_to_string(record['dateTime'])
-    try:
-        return template.format_map(ctx)
-    except Exception as e:
-        log.warning("Alert '%s': template render failed: %s", alert_id, e)
-        return template
+def _split_field_spec(content):
+    """Split a template placeholder's inner text into (expr, spec) on the
+    first top-level ':' -- one that isn't nested inside (), [], {} or a
+    quoted string, e.g. "avg('windSpeed', 30):.1f" -> ("avg('windSpeed',
+    30)", ".1f"). Returns (content, None) if there's no top-level ':'."""
+    depth = 0
+    quote = None
+    i = 0
+    while i < len(content):
+        c = content[i]
+        if quote:
+            if c == '\\':
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+        elif c in ("'", '"'):
+            quote = c
+        elif c in '([{':
+            depth += 1
+        elif c in ')]}':
+            depth -= 1
+        elif c == ':' and depth == 0:
+            return content[:i], content[i + 1:]
+        i += 1
+    return content, None
+
+
+def render_template(template, namespace, alert_id):
+    """Render a template string. Each {...} placeholder is evaluated as a
+    Python expression against `namespace` (record fields + avg/amin/amax/
+    asum + to_C/to_F/to_kts/to_mps/convert -- the same namespace used for
+    "expression"), optionally followed by ':' and a str.format() format
+    spec, e.g. {avg('windSpeed', 30, unit='kts'):.1f}. A plain field name
+    like {outTemp} still works too, since it's just a name lookup. {{ and
+    }} are literal braces, like str.format(). If a placeholder's expression
+    raises (missing field, bad syntax, ...), that placeholder is left as
+    the literal "{original text}" rather than raising, so one bad field
+    never crashes the whole send."""
+    ns = dict(namespace)
+    ns['alert_id'] = alert_id
+    if 'dateTime' in ns:
+        ns['dateTime_str'] = timestamp_to_string(ns['dateTime'])
+
+    out = []
+    i, n = 0, len(template)
+    while i < n:
+        c = template[i]
+        if c == '{' and template[i:i + 2] == '{{':
+            out.append('{')
+            i += 2
+        elif c == '}' and template[i:i + 2] == '}}':
+            out.append('}')
+            i += 2
+        elif c == '{':
+            end = template.find('}', i + 1)
+            if end == -1:
+                out.append(template[i:])
+                break
+            content = template[i + 1:end]
+            expr, spec = _split_field_spec(content)
+            try:
+                value = eval(expr, {'__builtins__': SAFE_BUILTINS}, ns)
+                out.append(format(value, spec) if spec else str(value))
+            except Exception as e:
+                log.debug("Alert '%s': template field '{%s}' failed: %s",
+                          alert_id, content, e)
+                out.append('{' + content + '}')
+            i = end + 1
+        else:
+            out.append(c)
+            i += 1
+    return ''.join(out)
 
 
 class UserAlerts(StdService):
@@ -316,7 +473,7 @@ class UserAlerts(StdService):
         state = self._load_json(self._state_path(user_id)) or {}
         changed = False
 
-        aggregator = Aggregator(db_manager, record['dateTime'])
+        aggregator = Aggregator(db_manager, record['dateTime'], record.get('usUnits'))
 
         for alert in alerts:
             alert_id = alert.get('id')
@@ -349,8 +506,10 @@ class UserAlerts(StdService):
             return False
 
         # Build the eval namespace: record fields + avg()/amin()/amax()/asum()
+        # + to_C()/to_F()/to_kts()/to_mps()/convert()
         namespace = dict(record)
         namespace.update(aggregator.as_namespace())
+        namespace.update(UnitConverter(record).as_namespace())
 
         try:
             triggered = bool(eval(expression,
@@ -386,17 +545,17 @@ class UserAlerts(StdService):
             st['active'] = False
 
         if should_send:
-            self._dispatch(user_id, alert, record, channels_cfg)
+            self._dispatch(user_id, alert, namespace, channels_cfg)
 
         return True
 
     # -- dispatch (runs in a background thread; never touches state) ----
 
-    def _dispatch(self, user_id, alert, record, channels_cfg):
+    def _dispatch(self, user_id, alert, namespace, channels_cfg):
         alert_id = alert['id']
         template = alert.get('template', 'Alert {alert_id} triggered')
         subject = alert.get('subject', 'WeeWX alert: %s' % alert_id)
-        text = render_template(template, record, alert_id)
+        text = render_template(template, namespace, alert_id)
         channel_names = alert.get('channels', [])
 
         t = threading.Thread(
@@ -507,3 +666,13 @@ if __name__ == '__main__':
                       os.path.join(ua.users_dir, options.user_id + '.json'),
                       record, db_manager)
     print("State written to %s" % ua._state_path(options.user_id))
+
+    # _process_user() may have kicked off background daemon threads to
+    # actually send the alerts (see UserAlerts._dispatch). Those threads
+    # get killed the instant this script's main thread exits, which (unlike
+    # the long-running weewxd service) happens almost immediately here --
+    # often before a network send has finished. Wait for them so this
+    # stand-alone run reflects real delivery, not just "thread started".
+    for t in threading.enumerate():
+        if t is not threading.main_thread():
+            t.join(timeout=DEFAULT_NET_TIMEOUT + 5)
