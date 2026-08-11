@@ -8,32 +8,45 @@
 # weewx.conf, generate the matching nginx block with gen_nginx_conf.py
 # (next to this file) instead of hand-writing one.
 #
-# Install:
+# Easiest install: don't hand-edit this file at all -- run
+# `sudo ../deploy/install.sh --config /path/to/weewx.conf` from web/, which
+# generates and installs this whole unit for your actual checkout/venv
+# location automatically (see its own header comment). What follows is what
+# that script does, spelled out, for anyone who'd rather do it by hand or
+# via config management instead:
+#
 #   sudo cp useralerts-web.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now useralerts-web
 #
-# Adjust the paths below (User/Group, WorkingDirectory, ExecStart, --config)
-# to match your actual install layout first. Everything here is host
-# filesystem layout -- where the checkout/venv/weewx.conf actually live on
-# *this* machine -- which weewx.conf has no way to express about itself, so
-# unlike host/port/url_path above it can't be derived from it either; it has
-# to be set once, here. As shipped, this assumes the Debian/apt `weewx`
-# package's default layout:
+# First adjust the paths below (User/Group, WorkingDirectory, ExecStart,
+# --config) to match your actual install layout -- this is host filesystem
+# layout, where the checkout/venv/weewx.conf actually live on *this*
+# machine, which weewx.conf has no way to express about itself, so unlike
+# host/port/url_path above it can't be derived from it either; it has to be
+# set once, here. As shipped, this assumes the Debian/apt `weewx` package's
+# default layout:
 #   - weewx.conf at /etc/weewx/weewx.conf, running as user/group "weewx"
 #   - this repo checked out at /opt/weewx-alerts (adjust if you put it
 #     somewhere else)
-#   - a dedicated venv at /opt/weewx-alerts/web/venv, created with
-#     --system-site-packages so it can still `import weecfg`/`weewx.*` from
-#     the apt package's system Python install:
+#   - a dedicated venv at /opt/weewx-alerts/web/venv:
 #       sudo python3 -m venv --system-site-packages /opt/weewx-alerts/web/venv
 #       sudo /opt/weewx-alerts/web/venv/bin/pip install -r /opt/weewx-alerts/web/requirements.txt
+#     --system-site-packages pulls in the apt package's runtime deps (e.g.
+#     python3-configobj), but NOT weecfg/weewx.* themselves -- on an
+#     apt/rpm install those live under /usr/share/weewx, which is never
+#     installed as an actual site-packages entry (weewxd/weectl's own
+#     wrapper scripts add it to sys.path themselves; nothing else does). If
+#     `/opt/weewx-alerts/web/venv/bin/python3 -c "import weecfg"` fails,
+#     add it explicitly:
+#       echo /usr/share/weewx | sudo tee /opt/weewx-alerts/web/venv/lib/python3*/site-packages/weewx_bindir.pth
 #
 # If WeeWX was instead installed via `pip` into its own venv (as in this
 # dev repo), point WorkingDirectory/ExecStart/--config at that layout
 # instead (e.g. /home/weewx/weewx-alerts, /home/weewx/venv,
 # /home/weewx/weewx-data/weewx.conf) and skip the separate venv above --
-# just reuse weewx's own venv, `pip install -r requirements.txt` into it.
+# just reuse weewx's own venv (weecfg/weewx.* are already properly
+# installed into it), `pip install -r requirements.txt` into it.
 
 [Unit]
 Description=UserAlerts config web panel

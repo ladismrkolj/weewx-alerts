@@ -43,18 +43,28 @@ and where it listens is configured once, in `weewx.conf`, not hand-copied into n
 
 - `useralerts_web.py` reads `host`/`port` from here as defaults (a CLI `--host`/`--port` still
   overrides, so `./serve-panel.sh` keeps working with no `[[Web]]` section at all).
-- `deploy/useralerts-web.service` -- systemd unit that runs the panel as a background service.
-  It only needs `--config`; host/port come from `weewx.conf` as above.
-- `deploy/gen_nginx_conf.py --config /path/to/weewx.conf` -- prints the nginx `location` block
-  for `url_path`, wired to `host`:`port` and `auth_basic_user_file htpasswd_file`. Don't
-  hand-write this block or copy one from an old deployment; regenerate it (and
-  `nginx -t && systemctl reload nginx`) any time `[[Web]]` changes, so nginx can never drift out
-  of sync with what the app is actually bound to or what path it's meant to sit behind.
 
-Both files have full install steps in their own header comments. In short: create the
-`htpasswd` password file, `systemctl enable --now` the unit, paste `gen_nginx_conf.py`'s output
-into your existing site's `server {}` block, reload nginx. Do this over HTTPS -- basic auth
-sends credentials base64-encoded, not encrypted, on every request.
+**One command does the rest:**
+
+```bash
+sudo web/deploy/install.sh --config /path/to/weewx.conf --htpasswd-user someuser
+```
+
+This creates a venv and installs `requirements.txt` into it (handling the apt/rpm-package
+gotcha where `weecfg`/`weewx.*` live under `/usr/share/weewx`, not real site-packages, so a
+plain venv can't see them -- see the script's own comments), generates and installs
+`useralerts-web.service` for wherever this checkout/venv actually are (no placeholder paths to
+hand-edit), enables the service, prompts to set `someuser`'s password in the `htpasswd` file, and
+finally prints the nginx `location` block from `deploy/gen_nginx_conf.py`. Paste that into the
+`server {}` block that already serves your WeeWX `public_html` (must be the HTTPS one -- basic
+auth sends credentials base64-encoded, not encrypted), then `nginx -t && systemctl reload nginx`
+-- the one step left that has to happen in a file this script has no business touching itself.
+
+Safe to re-run (e.g. after changing `[[Web]]`): it leaves an existing venv alone and always
+regenerates the systemd unit and nginx block fresh, so they can't drift out of sync with
+`weewx.conf`. Run `web/deploy/install.sh --help` for all options, or see `deploy/useralerts-web.service`
+and `deploy/gen_nginx_conf.py`'s own header comments for what it's doing and how to do it by hand
+instead (e.g. under config management like Ansible).
 
 The app itself already knows how to sit behind a proxy like this (see the `ProxyFix` wiring in
 `useralerts_web.py`), so `url_for()`-generated links/forms/redirects correctly come out under
