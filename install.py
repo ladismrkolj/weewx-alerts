@@ -25,7 +25,7 @@ def loader():
 class UserAlertsInstaller(ExtensionInstaller):
     def __init__(self):
         super(UserAlertsInstaller, self).__init__(
-            version="1.0",
+            version="1.1",
             name='useralerts',
             description='Per-user, JSON-configured alerting service (Telegram/email) for WeeWX.',
             author="Ladi Smrkolj",
