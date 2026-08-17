@@ -73,7 +73,7 @@ header comment for the full schema, expression language, and template language r
     {
       "id": "daytime_gust",
       "expression": "to_kts('windGust') is not None and to_kts('windGust') > 25 and 6 <= hour < 20 and weekday >= 5",
-      "template": "Gust {to_kts('windGust'):.0f}kt from {\"N\" if windDir >= 330 or windDir < 30 else \"E\" if windDir < 120 else \"S\" if windDir < 210 else \"W\" if windDir < 300 else \"NW\"} at {dateTime_str}",
+      "template": "Gust {to_kts('windGust'):.0f}kt from {'N' if windDir >= 330 or windDir < 30 else 'E' if windDir < 120 else 'S' if windDir < 210 else 'W' if windDir < 300 else 'NW'} at {dateTime_str}",
       "channels": ["telegram"],
       "time_wait": 1800
     }
@@ -85,6 +85,13 @@ The second alert shows two things worth knowing: `hour`, `weekday`, `yday` and f
 available as bare names (local time on the WeeWX host), and each `{...}` in a template is a
 full expression, so `A if cond else B` -- chained here for a compass direction -- gives you
 if/else in a message.
+
+Note the **single** quotes around `'N'`/`'E'`/... A template is not JSON-aware; it's just the
+string you store. Inside a JSON file you'd have to write double quotes as `\"`, and if you
+then copy that escaped form into the web panel (which takes the string directly, not JSON)
+the backslashes become literal, the expression won't parse, and the placeholder is emitted
+verbatim as `{\"N\" if ...}`. Single quotes need no escaping in either place, so the exact
+same text works in both -- prefer them for string literals inside a template.
 
 ```bash
 sudo systemctl restart weewx     # or however weewxd is run/restarted on your system
