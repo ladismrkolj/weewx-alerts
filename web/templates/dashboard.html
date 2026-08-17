@@ -153,6 +153,21 @@
         </li>
         <li><strong>Safe builtins</strong> -- <code>abs()</code>, <code>round()</code>,
           <code>min()</code>, <code>max()</code>, <code>len()</code></li>
+        <li><strong>Time &amp; date</strong> -- the record's timestamp, broken out as plain
+          numbers in <em>local time</em> on the WeeWX host (the same clock
+          <code>{dateTime_str}</code> uses, so DST is handled for you):
+          <code>hour</code> <span class="unit">0-23</span>,
+          <code>minute</code> <span class="unit">0-59</span>,
+          <code>minute_of_day</code> <span class="unit">0-1439</span>,
+          <code>weekday</code> <span class="unit">0=Mon .. 6=Sun</span>,
+          <code>day</code> <span class="unit">of month</span>,
+          <code>month</code> <span class="unit">1-12</span>,
+          <code>yday</code> <span class="unit">day of year, 1-366</span>,
+          <code>year</code>.
+          These describe the record being processed, not wall-clock "now" -- the same thing
+          in normal operation, but not while catching up on backlogged records. If your
+          station's archive table happens to have a field with one of these names, that real
+          field wins and the time value isn't injected.</li>
         <li><strong>Constants</strong> -- <code>True</code>, <code>False</code>,
           <code>None</code></li>
         <li><strong>Comparisons / logic</strong> --
@@ -164,16 +179,33 @@
           <code>avg('windSpeed', 30) is not None and avg('windSpeed', 30) &gt; 20</code><br>
           <code>to_C('outTemp') is not None and to_C('outTemp') &lt; 0</code><br>
           <code>to_kts('windGust') is not None and to_kts('windGust') &gt; 25</code><br>
-          <code>amax('outTemp', 30, unit='C') is not None and amax('outTemp', 30, unit='C') &lt; 0</code></li>
+          <code>amax('outTemp', 30, unit='C') is not None and amax('outTemp', 30, unit='C') &lt; 0</code><br>
+          <code>hour &gt;= 22 or hour &lt; 6</code> <span class="unit">nights only</span><br>
+          <code>weekday &gt;= 5</code> <span class="unit">weekends only</span><br>
+          <code>100 &lt;= yday &lt;= 250</code> <span class="unit">a season window</span><br>
+          <code>to_kts('windGust') is not None and to_kts('windGust') &gt; 25 and 6 &lt;= hour &lt; 20</code></li>
       </ul>
       <h3>Template</h3>
-      <p class="muted">Plain Python <code>str.format()</code> syntax, filled in with every
-        field from the current record, plus two extras: <code>{dateTime_str}</code>
-        (human-readable time) and <code>{alert_id}</code>. A typo'd field name is left
-        as literal text (e.g. <code>{oops}</code>) instead of crashing the send.</p>
+      <p class="muted">Each <code>{...}</code> is a full expression in the language above --
+        not just a field name -- optionally followed by <code>:</code> and a
+        <code>str.format()</code> format spec. So aggregates, unit conversions and the time
+        values all work inside a message, e.g.
+        <code>{avg('windSpeed', 30, unit='kts'):.1f}</code>. Two extras are available here
+        that are <em>not</em> available in the expression:
+        <code>{dateTime_str}</code> (human-readable time) and <code>{alert_id}</code>.
+        <code>&#123;&#123;</code> and <code>&#125;&#125;</code> are literal braces. A placeholder that fails
+        (typo'd field, bad syntax) is left as literal text (e.g. <code>{oops}</code>)
+        instead of crashing the send.</p>
+      <p class="muted">Because a placeholder is a full expression, Python's
+        <code>A if cond else B</code> gives you if/else in a message, and it chains for a
+        multi-way choice -- see the wind-direction example below. Two limits: a placeholder
+        ends at the <em>first</em> <code>}</code>, so no dicts or sets inside one, and only
+        expressions work -- no loops, no statements.</p>
       <p><strong>Examples</strong><br>
         <code>Freeze warning! outTemp={outTemp:.1f}F at {dateTime_str}</code><br>
-        <code>Alert {alert_id} fired: windSpeed={windSpeed}</code></p>
+        <code>Alert {alert_id} fired: windSpeed={windSpeed}</code><br>
+        <code>Wind {windSpeed:.0f} from {"N" if windDir &gt;= 330 or windDir &lt; 30 else "E" if windDir &lt; 120 else "S" if windDir &lt; 210 else "W" if windDir &lt; 300 else "NW"}</code><br>
+        <code>{"Overnight" if hour &gt;= 22 or hour &lt; 6 else "Daytime"} freeze at {dateTime_str}</code></p>
     </div>
   </details>
 
