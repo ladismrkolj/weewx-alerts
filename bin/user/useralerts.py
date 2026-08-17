@@ -98,8 +98,23 @@
 #     its unit= kwarg) instead of the current record's, using obs only to
 #     look up its unit group.
 #   - A small set of safe builtins are available: abs, round, min, max, len
-#   - dateTime_str (human readable time of the record) and alert_id are also
-#     available -- handy inside a template placeholder, e.g. {dateTime_str}.
+#   - Time and date of the record are available as bare names, in *local time*
+#     on the WeeWX host (the same clock dateTime_str is rendered in, so DST is
+#     handled for you): hour (0-23), minute (0-59), minute_of_day (0-1439),
+#     weekday (0=Monday .. 6=Sunday), day (of month), month (1-12), yday (day
+#     of year, 1-366), year. These describe the *record's* timestamp, not
+#     wall-clock "now" -- normally the same thing, but not when catching up on
+#     backlogged records. Examples:
+#       nights only     hour >= 22 or hour < 6
+#       weekends only   weekday >= 5
+#       a season        100 <= yday <= 250
+#     combine with any other condition, e.g.
+#       to_kts('windGust') is not None and to_kts('windGust') > 25 and 6 <= hour < 20
+#     (If your station's archive schema happens to have a field with one of
+#     these names, the real field wins and the time value is not injected.)
+#   - dateTime_str (human readable time of the record) and alert_id are
+#     injected for template placeholders only -- they are NOT available in
+#     "expression". The raw dateTime field is available in both.
 #   - Expressions that reference a missing field, or that raise any
 #     exception, are logged and simply treated as "not triggered" for that
 #     pass (in "expression") or left as the literal "{original text}" (in a
@@ -115,6 +130,17 @@
 #   - Optionally follow the expression with ':' and a str.format() format
 #     spec, e.g. {avg('windSpeed', 30, unit='kts'):.1f} or {outTemp:.1f}.
 #   - {{ and }} are literal braces, same as str.format().
+#   - Because a placeholder is a full expression, Python's conditional
+#     expression gives you if/else in a message, and it chains for a
+#     multi-way choice:
+#       Wind from {"N" if windDir >= 330 or windDir < 30 else
+#                  "E" if windDir < 120 else
+#                  "S" if windDir < 210 else
+#                  "W" if windDir < 300 else "NW"}
+#       {"Overnight" if hour >= 22 or hour < 6 else "Daytime"} freeze warning
+#     (written on one line -- a placeholder can't span lines usefully). Two
+#     limits: a placeholder ends at the *first* '}', so no dicts or sets
+#     inside one, and only expressions work -- no loops, no statements.
 #   - If a placeholder's expression raises (missing field, bad syntax, ...),
 #     that one placeholder is left as the literal "{original text}" rather
 #     than raising, so a typo or a transient missing field never crashes a
@@ -272,6 +298,25 @@ class UnitConverter:
         return {'to_C': self.to_C, 'to_F': self.to_F,
                 'to_kts': self.to_kts, 'to_mps': self.to_mps,
                 'convert': self.convert}
+
+
+def time_namespace(ts):
+    """Calendar values for a record's timestamp, as bare names for use in
+    expressions and templates: hour, minute, minute_of_day, weekday, day,
+    month, yday, year. Local time on the WeeWX host -- the same clock
+    dateTime_str is rendered in -- so DST is handled for free and
+    "hour >= 22" means 10pm at the station, not 10pm UTC."""
+    lt = time.localtime(ts)
+    return {
+        'hour': lt.tm_hour,
+        'minute': lt.tm_min,
+        'minute_of_day': lt.tm_hour * 60 + lt.tm_min,
+        'weekday': lt.tm_wday,          # 0 = Monday .. 6 = Sunday
+        'day': lt.tm_mday,
+        'month': lt.tm_mon,
+        'yday': lt.tm_yday,
+        'year': lt.tm_year,
+    }
 
 
 class Channels:
@@ -506,10 +551,16 @@ class UserAlerts(StdService):
             return False
 
         # Build the eval namespace: record fields + avg()/amin()/amax()/asum()
-        # + to_C()/to_F()/to_kts()/to_mps()/convert()
+        # + to_C()/to_F()/to_kts()/to_mps()/convert() + local time/date values
         namespace = dict(record)
         namespace.update(aggregator.as_namespace())
         namespace.update(UnitConverter(record).as_namespace())
+        if 'dateTime' in record:
+            # setdefault, not update: if a station's schema happens to have a
+            # field named e.g. 'day', the real field wins and nothing silently
+            # changes meaning.
+            for key, value in time_namespace(record['dateTime']).items():
+                namespace.setdefault(key, value)
 
         try:
             triggered = bool(eval(expression,

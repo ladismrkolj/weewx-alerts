@@ -69,10 +69,22 @@ header comment for the full schema, expression language, and template language r
       "template": "Freeze warning! outTemp={outTemp:.1f}F at {dateTime_str}",
       "channels": ["telegram"],
       "time_wait": 3600
+    },
+    {
+      "id": "daytime_gust",
+      "expression": "to_kts('windGust') is not None and to_kts('windGust') > 25 and 6 <= hour < 20 and weekday >= 5",
+      "template": "Gust {to_kts('windGust'):.0f}kt from {\"N\" if windDir >= 330 or windDir < 30 else \"E\" if windDir < 120 else \"S\" if windDir < 210 else \"W\" if windDir < 300 else \"NW\"} at {dateTime_str}",
+      "channels": ["telegram"],
+      "time_wait": 1800
     }
   ]
 }
 ```
+
+The second alert shows two things worth knowing: `hour`, `weekday`, `yday` and friends are
+available as bare names (local time on the WeeWX host), and each `{...}` in a template is a
+full expression, so `A if cond else B` -- chained here for a compass direction -- gives you
+if/else in a message.
 
 ```bash
 sudo systemctl restart weewx     # or however weewxd is run/restarted on your system
