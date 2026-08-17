@@ -82,6 +82,30 @@ journalctl -u weewx -f           # confirm it starts with no import errors, then
 Writing `users/<user_id>.json` by hand works fine, but hand-editing JSON gets old fast once
 you're managing more than one alert or user -- that's what the web panel (below) is for.
 
+An expression is more than a threshold. It can be limited to a time of day or a season, and
+both an expression and a template can branch:
+
+```json
+{
+  "id": "daytime_north_wind",
+  "expression": "windSpeed > 15 and time_between('7:00', '19:00') and date_between('2.may', '3.oct')",
+  "template": "Wind {compass(windDir)} at {to_kts('windSpeed'):.0f} kts, {'gusty' if windGust > 25 else 'steady'}",
+  "channels": ["telegram"],
+  "time_wait": 3600
+}
+```
+
+`time_between` / `date_between` wrap if you reverse them (`time_between('22:00', '6:00')` is
+overnight, `date_between('11-01', '03-15')` is winter), `weekday_in('sat', 'sun')` picks days,
+`between(windDir, 330, 30)` wraps through north, and `choose(cond1, val1, cond2, val2, default)`
+picks a word out of a number. The full reference is in `bin/user/useralerts.py`'s header comment,
+and the web panel repeats it as a cheatsheet next to the alert editor.
+
+`time_wait` is the minimum number of seconds between repeat sends of the same alert. It's
+measured from a `last_sent` timestamp kept in `state_dir`, so **`state_dir` has to be writable by
+the user `weewxd` runs as** -- if it isn't, the service logs an error saying so at startup, and
+the cooldown is only remembered until the next restart.
+
 ## The web config panel (optional)
 
 `web/useralerts_web.py` is a small Flask app for creating/editing those per-user JSON configs

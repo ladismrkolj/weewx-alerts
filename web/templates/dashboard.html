@@ -151,6 +151,28 @@
           </div>
           {% endif %}
         </li>
+        <li><strong>Time &amp; date</strong> -- of the current record, in your station's local
+          time. <code>time_between('7:00', '19:00')</code> is true during those hours, and
+          wraps midnight if you reverse it (<code>time_between('22:00', '6:00')</code>).
+          <code>date_between('05-02', '10-03')</code> is true from 2 May to 3 October, and
+          wraps new year if you reverse it (<code>date_between('11-01', '03-15')</code>);
+          month names work too, e.g. <code>date_between('2.may', '3.oct')</code>.
+          <code>weekday_in('sat', 'sun')</code> is true at weekends (numbers work too,
+          0 = Monday .. 6 = Sunday). The raw parts are available as plain values:
+          <code>hour</code>, <code>minute</code>, <code>day</code>, <code>month</code>,
+          <code>year</code>, <code>weekday</code>, <code>yearday</code>, plus
+          <code>time_str</code> ("08:30") and <code>date_str</code> ("2026-05-20").
+          Add one with <code>and</code> to limit any alert to a window of the day or year,
+          e.g. <code>outTemp &lt; 0 and time_between('7:00', '19:00')</code>.</li>
+        <li><strong>Conditionals</strong> -- <code>between(value, low, high)</code> is true
+          for <code>low &lt;= value &lt; high</code>, and wraps around when
+          <code>low &gt; high</code>, so <code>between(windDir, 330, 30)</code> means
+          "northerly". <code>choose(cond1, val1, cond2, val2, ..., default)</code> returns the
+          value belonging to the first true condition, and
+          <code>compass(windDir)</code> does the whole 16-point rose in one call
+          (<code>compass(windDir, 8)</code> or <code>compass(windDir, 4)</code> for a coarser
+          one). Python's own <code>A if cond else B</code> works as well. These are mostly for
+          templates, but they're valid in an expression too.</li>
         <li><strong>Safe builtins</strong> -- <code>abs()</code>, <code>round()</code>,
           <code>min()</code>, <code>max()</code>, <code>len()</code></li>
         <li><strong>Constants</strong> -- <code>True</code>, <code>False</code>,
@@ -164,16 +186,25 @@
           <code>avg('windSpeed', 30) is not None and avg('windSpeed', 30) &gt; 20</code><br>
           <code>to_C('outTemp') is not None and to_C('outTemp') &lt; 0</code><br>
           <code>to_kts('windGust') is not None and to_kts('windGust') &gt; 25</code><br>
-          <code>amax('outTemp', 30, unit='C') is not None and amax('outTemp', 30, unit='C') &lt; 0</code></li>
+          <code>amax('outTemp', 30, unit='C') is not None and amax('outTemp', 30, unit='C') &lt; 0</code><br>
+          <code>outTemp &lt; 0 and time_between('7:00', '19:00')</code><br>
+          <code>windSpeed &gt; 15 and date_between('2.may', '3.oct') and not weekday_in('sat', 'sun')</code></li>
       </ul>
       <h3>Template</h3>
-      <p class="muted">Plain Python <code>str.format()</code> syntax, filled in with every
-        field from the current record, plus two extras: <code>{dateTime_str}</code>
-        (human-readable time) and <code>{alert_id}</code>. A typo'd field name is left
-        as literal text (e.g. <code>{oops}</code>) instead of crashing the send.</p>
+      <p class="muted">Every <code>{...}</code> is evaluated as an expression in the same
+        language as above -- not just a field name -- so a function call, a
+        <code>choose()</code> or an <code>A if cond else B</code> all work inside one.
+        Two extras are available: <code>{dateTime_str}</code> (human-readable time) and
+        <code>{alert_id}</code>. Add <code>:</code> and a Python format spec to control
+        formatting, e.g. <code>{outTemp:.1f}</code>. A doubled brace
+        (<code>{{ '{{' }}</code> or <code>{{ '}}' }}</code>) is a literal brace. A placeholder that fails (typo'd field, bad syntax) is left as
+        literal text (e.g. <code>{oops}</code>) instead of crashing the send.</p>
       <p><strong>Examples</strong><br>
         <code>Freeze warning! outTemp={outTemp:.1f}F at {dateTime_str}</code><br>
-        <code>Alert {alert_id} fired: windSpeed={windSpeed}</code></p>
+        <code>Alert {alert_id} fired: windSpeed={windSpeed}</code><br>
+        <code>Wind {compass(windDir)} at {to_kts('windSpeed'):.0f} kts</code><br>
+        <code>Wind is {choose(between(windDir,330,30),'N',between(windDir,60,120),'E','other')}</code><br>
+        <code>It is {'freezing' if to_C('outTemp') &lt; 0 else 'mild'} at {time_str}</code></p>
     </div>
   </details>
 

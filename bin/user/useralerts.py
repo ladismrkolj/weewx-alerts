@@ -20,6 +20,11 @@
 #       users_dir = user/useralerts/users     # one <user_id>.json per user
 #       state_dir = user/useralerts/state     # one <user_id>.json per user
 #
+#   state_dir must be writable by the user weewxd runs as -- it's where each
+#   alert's "last_sent" timestamp lives, i.e. what "time_wait" is measured
+#   from across restarts. If it isn't writable the service says so once, at
+#   startup, in the log.
+#
 # Install:
 #   1. Copy this file to BIN_ROOT/user/useralerts.py   (i.e. bin/user/)
 #   2. Add the [UserAlerts] section above to weewx.conf
@@ -54,7 +59,7 @@
 #   "alerts": [
 #     {
 #       "id": "freeze_warning",
-#       "expression": "outTemp < 32.0",
+#       "expression": "outTemp < 32.0 and time_between('7:00', '19:00')",
 #       "template": "Freeze warning! outTemp={outTemp:.1f}F at {dateTime_str}",
 #       "subject": "WeeWX: freeze warning",
 #       "channels": ["telegram", "email"],
@@ -97,6 +102,28 @@
 #     convert an explicit value (e.g. an avg()/amax() result without using
 #     its unit= kwarg) instead of the current record's, using obs only to
 #     look up its unit group.
+#   - Time and date of the current record, in the station's LOCAL time:
+#     time_between('7:00', '19:00') is True during daylight hours, and wraps
+#     midnight if you reverse it, e.g. time_between('22:00', '6:00').
+#     date_between('05-02', '10-03') is True from 2 May to 3 October, and
+#     wraps new year if you reverse it, e.g. date_between('11-01', '03-15');
+#     month names work too, e.g. date_between('2.may', '3.oct').
+#     weekday_in('sat', 'sun') is True at weekends (numbers work too,
+#     0 = Monday .. 6 = Sunday). The raw parts are there as well: hour,
+#     minute, day, month, year, weekday, yearday, plus the preformatted
+#     time_str ("08:30") and date_str ("2026-05-20"). Combine them with
+#     "and" to gate any alert, e.g.
+#       "outTemp < 0 and time_between('7:00', '19:00')"
+#   - Conditionals, for picking a word out of a number:
+#     between(value, low, high) is True for low <= value < high, and wraps
+#     around when low > high -- so between(windDir, 330, 30) means
+#     "northerly". choose(cond1, val1, cond2, val2, ..., default) returns
+#     the value for the first true condition, e.g.
+#       choose(between(windDir, 330, 30), 'N',
+#              between(windDir, 60, 120), 'E', '?')
+#     and compass(windDir) does the whole 16-point rose in one call
+#     (compass(windDir, 8) or compass(windDir, 4) for a coarser one).
+#     Python's own "A if cond else B" works too.
 #   - A small set of safe builtins are available: abs, round, min, max, len
 #   - dateTime_str (human readable time of the record) and alert_id are also
 #     available -- handy inside a template placeholder, e.g. {dateTime_str}.
@@ -114,6 +141,11 @@
 #     {avg('windSpeed', 30, unit='kts')} or {to_kts('windGust')}.
 #   - Optionally follow the expression with ':' and a str.format() format
 #     spec, e.g. {avg('windSpeed', 30, unit='kts'):.1f} or {outTemp:.1f}.
+#   - Since it's the full expression language, a template can branch:
+#       "Wind is {choose(between(windDir,330,30),'N',
+#                        between(windDir,60,120),'E','?')}"
+#       "It is {'freezing' if to_C('outTemp') < 0 else 'mild'} out"
+#       "Wind {compass(windDir)} at {windSpeed:.0f}"
 #   - {{ and }} are literal braces, same as str.format().
 #   - If a placeholder's expression raises (missing field, bad syntax, ...),
 #     that one placeholder is left as the literal "{original text}" rather
@@ -151,6 +183,31 @@ SAFE_BUILTINS = {
     'abs': abs, 'round': round, 'min': min, 'max': max, 'len': len,
     'True': True, 'False': False, 'None': None,
 }
+
+
+def _coerce_time_wait(value, user_id, alert_id):
+    """time_wait as a number of seconds. A hand-edited config can easily
+    carry it as a string ("3600") or as nonsense; either used to blow up the
+    cooldown comparison, so fall back to the default rather than letting a
+    TypeError decide how often an alert sends."""
+    if value is None:
+        return DEFAULT_TIME_WAIT
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        log.warning("UserAlerts: user '%s' alert '%s': time_wait %r is not a "
+                    "number, using %s s", user_id, alert_id, value,
+                    DEFAULT_TIME_WAIT)
+        return DEFAULT_TIME_WAIT
+    return max(0.0, seconds)
+
+
+def _coerce_ts(value):
+    """A timestamp out of a state file, or None if it's missing/corrupt."""
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _validate_obs_name(obs):
@@ -274,6 +331,158 @@ class UnitConverter:
                 'convert': self.convert}
 
 
+WEEKDAY_NAMES = {'mon': 0, 'monday': 0, 'tue': 1, 'tues': 1, 'tuesday': 1,
+                 'wed': 2, 'weds': 2, 'wednesday': 2, 'thu': 3, 'thur': 3,
+                 'thurs': 3, 'thursday': 3, 'fri': 4, 'friday': 4,
+                 'sat': 5, 'saturday': 5, 'sun': 6, 'sunday': 6}
+
+MONTH_NAMES = {'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+               'jul': 7, 'aug': 8, 'sep': 9, 'sept': 9, 'oct': 10,
+               'nov': 11, 'dec': 12}
+
+
+def _parse_clock(value):
+    """'7', '7:30', '07:30:00', 730? -> seconds since local midnight."""
+    if isinstance(value, (int, float)):
+        # A bare number means whole hours, e.g. time_between(7, 19).
+        return float(value) * 3600.0
+    parts = str(value).strip().split(':')
+    if not 1 <= len(parts) <= 3:
+        raise ValueError("Bad time of day: %r" % (value,))
+    parts = [float(p) for p in parts] + [0.0, 0.0]
+    return parts[0] * 3600.0 + parts[1] * 60.0 + parts[2]
+
+
+def _parse_monthday(value):
+    """'05-02', '5/2', '2.may', 'may 2' -> a sortable (month, day) key as
+    month*100 + day. Day-first and month-first both work as long as one of
+    the two parts is a month name; all-numeric is month-first ('05-02' is
+    2 May), matching the ISO-ish order the rest of weewx uses."""
+    parts = [p for p in re.split(r'[-/.\s,]+', str(value).strip().lower()) if p]
+    if len(parts) != 2:
+        raise ValueError("Bad month/day: %r" % (value,))
+    month = day = None
+    for part in parts:
+        name = MONTH_NAMES.get(part[:4] if part[:4] in MONTH_NAMES else part[:3])
+        if name is not None:
+            month = name
+        else:
+            day = int(part)
+    if month is None:            # all numeric -> month first
+        month, day = int(parts[0]), int(parts[1])
+    if day is None or not 1 <= month <= 12 or not 1 <= day <= 31:
+        raise ValueError("Bad month/day: %r" % (value,))
+    return month * 100 + day
+
+
+def cyclic_between(value, low, high):
+    """True if value is in [low, high). If low > high the range wraps around
+    the end of the cycle (midnight, 31 December, due north, ...), so
+    between(windDir, 330, 30) means 'northerly' rather than 'never'."""
+    if value is None or low is None or high is None:
+        return False
+    if low <= high:
+        return low <= value < high
+    return value >= low or value < high
+
+
+def choose(*args):
+    """First value whose condition is true, from (cond, value) pairs:
+
+        choose(between(windDir, 330, 30), 'N',
+               between(windDir, 30, 60),  'NE',
+               '?')                        # optional trailing default
+
+    Returns '' if nothing matches and no default was given."""
+    pairs = len(args) // 2
+    for i in range(pairs):
+        if args[i * 2]:
+            return args[i * 2 + 1]
+    return args[-1] if len(args) % 2 else ''
+
+
+class TimeContext:
+    """Builds the time-of-day / date-of-year part of an alert's namespace,
+    bound to the current record's dateTime and evaluated in the station's
+    local time zone -- so an alert can be limited to daylight hours, to a
+    season, to weekdays, and so on."""
+
+    def __init__(self, ts):
+        self.ts = ts
+        self.tm = time.localtime(ts) if ts is not None else time.localtime()
+
+    def time_between(self, start, end):
+        """True between two times of day, e.g. time_between('7:00', '19:00').
+        Wraps midnight when start > end, e.g. time_between('22:00', '6:00')."""
+        seconds = (self.tm.tm_hour * 3600 + self.tm.tm_min * 60
+                   + self.tm.tm_sec)
+        return cyclic_between(seconds, _parse_clock(start), _parse_clock(end))
+
+    def date_between(self, start, end):
+        """True between two dates of the year, ignoring the year itself,
+        e.g. date_between('05-02', '10-03') for 2 May .. 3 October. Wraps
+        new year when start > end, e.g. date_between('11-01', '03-15')."""
+        return cyclic_between(self.tm.tm_mon * 100 + self.tm.tm_mday,
+                              _parse_monthday(start), _parse_monthday(end))
+
+    def weekday_in(self, *days):
+        """True on any of the named days, e.g. weekday_in('sat', 'sun').
+        Numbers work too (0 = Monday .. 6 = Sunday)."""
+        wanted = set()
+        for day in days:
+            if isinstance(day, (list, tuple)):
+                wanted.update(self._weekday_num(d) for d in day)
+            else:
+                wanted.add(self._weekday_num(day))
+        return self.tm.tm_wday in wanted
+
+    @staticmethod
+    def _weekday_num(day):
+        if isinstance(day, str):
+            num = WEEKDAY_NAMES.get(day.strip().lower())
+            if num is None:
+                raise ValueError("Unknown weekday: %r" % (day,))
+            return num
+        return int(day) % 7
+
+    def as_namespace(self):
+        return {'time_between': self.time_between,
+                'date_between': self.date_between,
+                'weekday_in': self.weekday_in,
+                'hour': self.tm.tm_hour,
+                'minute': self.tm.tm_min,
+                'day': self.tm.tm_mday,
+                'month': self.tm.tm_mon,
+                'year': self.tm.tm_year,
+                'weekday': self.tm.tm_wday,
+                'yearday': self.tm.tm_yday,
+                'time_str': time.strftime('%H:%M', self.tm),
+                'date_str': time.strftime('%Y-%m-%d', self.tm)}
+
+
+COMPASS_POINTS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE',
+                  'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW']
+
+
+def compass(degrees, points=16):
+    """Cardinal name for a bearing, e.g. compass(windDir) -> 'NNE', or
+    compass(windDir, 8) -> 'NE' for the coarser 8-point rose. Returns ''
+    for a missing value, so it's safe on a record with no windDir."""
+    if degrees is None:
+        return ''
+    try:
+        degrees = float(degrees)
+        points = int(points)
+    except (TypeError, ValueError):
+        return ''
+    if points not in (4, 8, 16):
+        raise ValueError("compass() supports 4, 8 or 16 points, not %r"
+                         % (points,))
+    step = 16 // points
+    index = int((degrees % 360.0) / (360.0 / points) + 0.5) % points
+    return COMPASS_POINTS[index * step]
+
+
 class Channels:
     """Static senders for each supported alert channel. Each takes the
     channel's connection settings (from the user's config) and the
@@ -365,6 +574,36 @@ def _split_field_spec(content):
     return content, None
 
 
+def _find_placeholder_end(template, start):
+    """Index of the '}' closing the placeholder that opens at `start`,
+    skipping any bracket or quoted string in between -- so a placeholder can
+    contain a dict/set literal or a nested format spec without the first
+    stray '}' cutting it short. Returns -1 if it's never closed."""
+    depth = 0
+    quote = None
+    i = start + 1
+    while i < len(template):
+        c = template[i]
+        if quote:
+            if c == '\\':
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+        elif c in ("'", '"'):
+            quote = c
+        elif c in '([{':
+            depth += 1
+        elif c in ')]':
+            depth -= 1
+        elif c == '}':
+            if depth == 0:
+                return i
+            depth -= 1
+        i += 1
+    return -1
+
+
 def render_template(template, namespace, alert_id):
     """Render a template string. Each {...} placeholder is evaluated as a
     Python expression against `namespace` (record fields + avg/amin/amax/
@@ -392,7 +631,7 @@ def render_template(template, namespace, alert_id):
             out.append('}')
             i += 2
         elif c == '{':
-            end = template.find('}', i + 1)
+            end = _find_placeholder_end(template, i)
             if end == -1:
                 out.append(template[i:])
                 break
@@ -436,11 +675,41 @@ class UserAlerts(StdService):
             log.warning("UserAlerts: users_dir '%s' does not exist; "
                         "no alerts will be evaluated until it does",
                         self.users_dir)
-        os.makedirs(self.state_dir, exist_ok=True)
+        try:
+            os.makedirs(self.state_dir, exist_ok=True)
+        except OSError as e:
+            log.error("UserAlerts: could not create state_dir '%s': %s",
+                      self.state_dir, e)
+
+        # Per-alert send state (last_sent, ...) lives in state_dir, but the
+        # files are only the *persistent* copy of it -- this in-memory cache
+        # is what 'time_wait' is actually enforced against. Without it, a
+        # state_dir we can't write (wrong owner, read-only mount, ...) would
+        # silently reset every alert's cooldown on every archive record, and
+        # every triggered alert would re-send every single record cycle.
+        self._state_cache = {}
+        self._check_state_dir_writable()
 
         self.bind(weewx.NEW_ARCHIVE_RECORD, self.new_archive_record)
         log.info("UserAlerts: watching '%s' for user alert configs",
                   self.users_dir)
+
+    def _check_state_dir_writable(self):
+        """Probe state_dir once at startup and complain loudly if we can't
+        write it, since that's the classic cause of 'my alert fires on every
+        record even though time_wait is set' -- the cooldown timestamps have
+        nowhere to live across a restart."""
+        probe = os.path.join(self.state_dir, '.write_test')
+        try:
+            with open(probe, 'w'):
+                pass
+            os.unlink(probe)
+        except OSError as e:
+            log.error("UserAlerts: state_dir '%s' is not writable (%s). "
+                      "Alert cooldowns ('time_wait') will still be honoured "
+                      "while weewxd runs, but are lost on restart. Fix the "
+                      "ownership/permissions of that directory so the user "
+                      "weewxd runs as can write it.", self.state_dir, e)
 
     # -- main entry point, called on every new archive record ------------
 
@@ -470,7 +739,7 @@ class UserAlerts(StdService):
         if not alerts:
             return
 
-        state = self._load_json(self._state_path(user_id)) or {}
+        state = self._load_state(user_id)
         changed = False
 
         aggregator = Aggregator(db_manager, record['dateTime'], record.get('usUnits'))
@@ -494,9 +763,22 @@ class UserAlerts(StdService):
                 changed = True
 
         if changed:
-            self._save_json(self._state_path(user_id), state)
+            self._save_state(user_id, state)
 
     # -- per alert -----------------------------------------------------
+
+    @staticmethod
+    def _namespace(record, aggregator):
+        """The eval namespace shared by "expression" and every template
+        placeholder: the record's own fields, plus the aggregate, unit,
+        time/date and conditional helpers."""
+        namespace = dict(record)
+        namespace.update(aggregator.as_namespace())
+        namespace.update(UnitConverter(record).as_namespace())
+        namespace.update(TimeContext(record.get('dateTime')).as_namespace())
+        namespace.update({'between': cyclic_between, 'choose': choose,
+                          'compass': compass})
+        return namespace
 
     def _process_alert(self, user_id, alert, record, aggregator,
                         channels_cfg, state):
@@ -505,11 +787,7 @@ class UserAlerts(StdService):
         if not expression:
             return False
 
-        # Build the eval namespace: record fields + avg()/amin()/amax()/asum()
-        # + to_C()/to_F()/to_kts()/to_mps()/convert()
-        namespace = dict(record)
-        namespace.update(aggregator.as_namespace())
-        namespace.update(UnitConverter(record).as_namespace())
+        namespace = self._namespace(record, aggregator)
 
         try:
             triggered = bool(eval(expression,
@@ -530,13 +808,14 @@ class UserAlerts(StdService):
         st = state.setdefault(alert_id, {'active': False, 'last_sent': None})
         st['last_checked'] = now
         st['last_error'] = None
-        time_wait = alert.get('time_wait', DEFAULT_TIME_WAIT)
+        time_wait = _coerce_time_wait(alert.get('time_wait'), user_id, alert_id)
+        last_sent = _coerce_ts(st.get('last_sent'))
 
         should_send = False
         if triggered:
-            never_sent = st.get('last_sent') is None
+            never_sent = last_sent is None
             cooled_down = (not never_sent and
-                           (now - st['last_sent']) >= time_wait)
+                           (now - last_sent) >= time_wait)
             if never_sent or cooled_down:
                 should_send = True
                 st['last_sent'] = now
@@ -592,6 +871,19 @@ class UserAlerts(StdService):
     def _state_path(self, user_id):
         return os.path.join(self.state_dir, '%s.json' % user_id)
 
+    def _load_state(self, user_id):
+        """This user's alert state. Read from disk once per process, then
+        served out of memory -- so a state_dir we can't write no longer
+        means every alert forgets its last_sent between records."""
+        if user_id not in self._state_cache:
+            self._state_cache[user_id] = \
+                self._load_json(self._state_path(user_id)) or {}
+        return self._state_cache[user_id]
+
+    def _save_state(self, user_id, state):
+        self._state_cache[user_id] = state
+        self._save_json(self._state_path(user_id), state)
+
     @staticmethod
     def _load_json(path):
         if not os.path.isfile(path):
@@ -603,15 +895,25 @@ class UserAlerts(StdService):
             log.error("UserAlerts: could not read '%s': %s", path, e)
             return None
 
-    @staticmethod
-    def _save_json(path, data):
+    _write_failures = set()
+
+    @classmethod
+    def _save_json(cls, path, data):
         tmp_path = path + '.tmp'
         try:
             with open(tmp_path, 'w') as f:
                 json.dump(data, f, indent=2)
             os.replace(tmp_path, path)   # atomic on POSIX and Windows
         except OSError as e:
-            log.error("UserAlerts: could not write '%s': %s", path, e)
+            # Once per path per process: this would otherwise fire on every
+            # archive record for as long as the directory stays unwritable.
+            if path not in cls._write_failures:
+                cls._write_failures.add(path)
+                log.error("UserAlerts: could not write '%s': %s (further "
+                          "write failures for this file are not logged)",
+                          path, e)
+        else:
+            cls._write_failures.discard(path)
 
 
 # ---------------------------------------------------------------------
