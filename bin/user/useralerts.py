@@ -133,14 +133,21 @@
 #   - Because a placeholder is a full expression, Python's conditional
 #     expression gives you if/else in a message, and it chains for a
 #     multi-way choice:
-#       Wind from {"N" if windDir >= 330 or windDir < 30 else
-#                  "E" if windDir < 120 else
-#                  "S" if windDir < 210 else
-#                  "W" if windDir < 300 else "NW"}
-#       {"Overnight" if hour >= 22 or hour < 6 else "Daytime"} freeze warning
+#       Wind from {'N' if windDir >= 330 or windDir < 30 else
+#                  'E' if windDir < 120 else
+#                  'S' if windDir < 210 else
+#                  'W' if windDir < 300 else 'NW'}
+#       {'Overnight' if hour >= 22 or hour < 6 else 'Daytime'} freeze warning
 #     (written on one line -- a placeholder can't span lines usefully). Two
 #     limits: a placeholder ends at the *first* '}', so no dicts or sets
 #     inside one, and only expressions work -- no loops, no statements.
+#     Prefer SINGLE quotes for string literals in a template. A template is
+#     just a stored string, not JSON: written into a users/<id>.json file by
+#     hand, double quotes have to be escaped as \" -- and if that escaped
+#     form is then pasted into the web panel (which takes the string
+#     directly, not JSON), the backslashes are literal, the expression won't
+#     parse, and you get the placeholder back verbatim in your message.
+#     Single quotes need no escaping in either place.
 #   - If a placeholder's expression raises (missing field, bad syntax, ...),
 #     that one placeholder is left as the literal "{original text}" rather
 #     than raising, so a typo or a transient missing field never crashes a
