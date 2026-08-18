@@ -98,6 +98,14 @@
 #     its unit= kwarg) instead of the current record's, using obs only to
 #     look up its unit group.
 #   - A small set of safe builtins are available: abs, round, min, max, len
+#   - compass(windDir) turns degrees into a direction name: 'NW'. Pass a
+#     second argument for how many points you want -- compass(windDir, 4)
+#     for N/E/S/W, 8 (the default) for NE/SE/SW/NW as well, 16 for
+#     NNE/ENE/... too. Takes either the degrees, compass(windDir), or the
+#     name of a field to read them from, compass('windDir'). Rounds to the
+#     nearest sector and wraps at 360, so 350 and 10 are both 'N'. Returns
+#     None (never raises) for a missing or non-numeric value. Mostly useful
+#     in a template, e.g. "Wind from {compass(windDir)}".
 #   - Time and date of the record are available as bare names, in *local time*
 #     on the WeeWX host (the same clock dateTime_str is rendered in, so DST is
 #     handled for you): hour (0-23), minute (0-59), minute_of_day (0-1439),
@@ -305,6 +313,50 @@ class UnitConverter:
         return {'to_C': self.to_C, 'to_F': self.to_F,
                 'to_kts': self.to_kts, 'to_mps': self.to_mps,
                 'convert': self.convert}
+
+
+# Compass point names, by how many points the caller asked for. Each tuple
+# starts at North and runs clockwise.
+_COMPASS_POINTS = {
+    4: ('N', 'E', 'S', 'W'),
+    8: ('N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'),
+    16: ('N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE',
+         'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'),
+}
+
+
+def make_compass(record):
+    """Builds the compass() function for the eval namespace, bound to a
+    record so that it can take a field name as well as a bare number."""
+
+    def compass(value, points=8):
+        """Wind direction as a name instead of degrees:
+        compass(windDir) -> 'NW'. points is 4 (N/E/S/W), 8 (adds NE/SE/SW/NW,
+        the default) or 16 (adds NNE/ENE/...). Takes either the degrees
+        themselves, compass(windDir), or the name of a field to read them
+        from, compass('windDir') -- both work, so whichever habit you have
+        from the other helpers is fine. Rounds to the nearest sector and
+        wraps at 360, so 350 and 10 are both 'N'. Returns None rather than
+        raising for a missing or non-numeric value, same as to_kts() and
+        convert(), so a gap in the data never crashes a send."""
+        try:
+            names = _COMPASS_POINTS[points]
+        except (KeyError, TypeError):
+            raise ValueError("compass() points must be 4, 8 or 16, not %r"
+                             % (points,))
+        if isinstance(value, str):
+            # A field name -- look up the record's current value for it.
+            value = record.get(_validate_obs_name(value))
+        sector = 360.0 / len(names)
+        try:
+            index = int(float(value) % 360 / sector + 0.5)
+        except (TypeError, ValueError, OverflowError):
+            # Missing, non-numeric, or NaN/infinity (which survive float()
+            # but blow up in int()) -- all just "no direction to report".
+            return None
+        return names[index % len(names)]
+
+    return compass
 
 
 def time_namespace(ts):
@@ -558,10 +610,12 @@ class UserAlerts(StdService):
             return False
 
         # Build the eval namespace: record fields + avg()/amin()/amax()/asum()
-        # + to_C()/to_F()/to_kts()/to_mps()/convert() + local time/date values
+        # + to_C()/to_F()/to_kts()/to_mps()/convert() + compass() + local
+        # time/date values
         namespace = dict(record)
         namespace.update(aggregator.as_namespace())
         namespace.update(UnitConverter(record).as_namespace())
+        namespace['compass'] = make_compass(record)
         if 'dateTime' in record:
             # setdefault, not update: if a station's schema happens to have a
             # field named e.g. 'day', the real field wins and nothing silently
