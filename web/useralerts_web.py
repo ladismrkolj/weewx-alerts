@@ -564,6 +564,44 @@ def build_namespace(record):
     return namespace
 
 
+def describe_error(e, source):
+    """Turn an exception from an expression into something a code editor
+    would show: the message, and for a SyntaxError the line and column it
+    points at, plus that line of the user's own source.
+
+    eval_expression() compiles the expression wrapped in "(\n...\n)", so a
+    SyntaxError's lineno is one more than the line the user actually typed
+    -- undone here, since the whole point is to point at their text."""
+    detail = {'error': '%s: %s' % (type(e).__name__, e)}
+    if isinstance(e, SyntaxError):
+        # e.msg, not str(e): str() tacks on "(<expression>, line 2)", which
+        # duplicates the line/column reported separately below.
+        detail['error'] = '%s: %s' % (type(e).__name__, e.msg)
+        lines = source.splitlines()
+        lineno = (e.lineno or 1) - 1          # unwrap the leading "(\n"
+        # An error at the very end (e.g. a trailing operator) is reported
+        # against the wrapper's closing ")" line -- point at the last line
+        # the user actually typed instead.
+        lineno = max(1, min(lineno, len(lines)))
+        if lines:
+            detail['lineno'] = lineno
+            detail['line'] = lines[lineno - 1]
+            if e.offset:
+                # Clamp: the wrapper's closing "\n)" can put the caret one
+                # past the end of the real line.
+                detail['offset'] = max(1, min(e.offset, len(detail['line']) + 1))
+    return detail
+
+
+def eval_expression(expression, namespace, worker):
+    """worker.eval_expression() if the loaded useralerts.py has it (it also
+    makes multi-line expressions work), else the older inline eval so the
+    panel still works against an out-of-date installed copy."""
+    if hasattr(worker, 'eval_expression'):
+        return worker.eval_expression(expression, namespace)
+    return eval(expression, {'__builtins__': worker.SAFE_BUILTINS}, namespace)
+
+
 @app.route('/u/<user_id>/alerts/test', methods=['POST'])
 def test_alert(user_id):
     """Evaluate an expression and/or render a template against the latest
@@ -575,6 +613,9 @@ def test_alert(user_id):
     editor, and the standalone expression debugger (which posts an
     expression plus include_record=1 to also get the record it was
     evaluated against)."""
+    # Only the outer whitespace goes: newlines and indentation inside a
+    # multi-line expression are the user's formatting, and are what the
+    # error's line/column numbers refer to.
     expression = (request.form.get('expression') or '').strip()
     template = request.form.get('template') or ''
     alert_id = (request.form.get('id') or '').strip() or 'test_alert'
@@ -599,8 +640,7 @@ def test_alert(user_id):
 
     if expression:
         try:
-            value = eval(expression, {'__builtins__': worker.SAFE_BUILTINS},
-                         dict(namespace))
+            value = eval_expression(expression, dict(namespace), worker)
             result['expression'] = {'triggered': bool(value),
                                     'value': repr(value),
                                     # For the debugger, where "what did this
@@ -612,7 +652,7 @@ def test_alert(user_id):
             # here the reason is the whole point, so it's reported instead of
             # only logged. A NameError is usually a typo, but can also just
             # be a field this particular record doesn't carry.
-            result['expression'] = {'error': '%s: %s' % (type(e).__name__, e)}
+            result['expression'] = describe_error(e, expression)
 
     if request.form.get('include_record'):
         # The debugger shows what it evaluated against, so a None/NameError

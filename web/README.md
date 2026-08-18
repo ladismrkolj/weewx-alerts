@@ -152,7 +152,11 @@ sudo nginx -t && sudo systemctl reload nginx
   expression, get back what it evaluates to (value, type, and whether that counts as true as
   a condition) plus the record it was evaluated against, so you can check a field's current
   value or what `to_C('outTemp')` gives you without wiring it into an alert first. Nothing
-  is saved and no message is sent -- it's a dry run of one evaluation pass. To keep the
+  is saved and no message is sent -- it's a dry run of one evaluation pass. The expression
+  boxes are monospace and don't wrap, and a syntax error is reported the way a compiler
+  would: the line, a caret under the column, and the message. Expressions may span several
+  lines (they're compiled wrapped in parentheses), so a long condition can be broken up and
+  indented like real code -- in the service too, not just in the panel. To keep the
   panel's answer and the service's behaviour from drifting apart, it
   imports `useralerts.py` (the installed `user.useralerts` if importable, otherwise the copy
   in this checkout) and reuses its `Aggregator` / `UnitConverter` / `render_template`, so

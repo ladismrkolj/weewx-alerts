@@ -232,10 +232,17 @@
       <input type="text" name="id" value="{{ edit_alert.id }}" required pattern="[A-Za-z0-9_\-]+">
     </label>
     <label>expression
-      <textarea name="expression" rows="2" required>{{ edit_alert.expression }}</textarea>
+      <textarea name="expression" rows="4" required class="code-input" spellcheck="false"
+                autocapitalize="off" autocorrect="off" autocomplete="off"
+                wrap="off">{{ edit_alert.expression }}</textarea>
     </label>
+    <p class="muted">Long conditions can be broken across lines and indented, as in real
+      code -- the expression is compiled wrapped in parentheses, so line breaks are just
+      formatting.</p>
     <label>template
-      <textarea name="template" rows="2" required>{{ edit_alert.template }}</textarea>
+      <textarea name="template" rows="3" required class="code-input" spellcheck="false"
+                autocapitalize="off" autocorrect="off"
+                autocomplete="off">{{ edit_alert.template }}</textarea>
     </label>
     <fieldset>
       <legend>channels</legend>
@@ -274,7 +281,8 @@
     saved.</p>
   <form id="debug-form" onsubmit="return false;">
     <label>expression
-      <textarea name="expression" rows="2"
+      <textarea name="expression" rows="4" class="code-input" spellcheck="false"
+                autocapitalize="off" autocorrect="off" autocomplete="off" wrap="off"
                 placeholder="to_kts('windGust')"></textarea>
     </label>
     <button type="button" class="js-test" data-test="expression" data-debug="1"

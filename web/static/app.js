@@ -65,6 +65,21 @@ document.addEventListener('DOMContentLoaded', function () {
     out.hidden = false;
   }
 
+  // A compiler-style pointer at where a syntax error is, e.g.
+  //   2 |     and avg('windSpeed', 30, 'knot') > 1
+  //     |     ^
+  // Only syntax errors carry a position; anything else is just its message.
+  function errorNodes(err) {
+    var nodes = [];
+    if (err.line !== undefined) {
+      var gutter = String(err.lineno) + ' | ';
+      var caret = ' '.repeat(gutter.length + Math.max(0, (err.offset || 1) - 1)) + '^';
+      nodes.push(el('pre', 'code-frame', gutter + err.line + '\n' + caret));
+    }
+    nodes.push(el('p', 'test-error', err.error));
+    return nodes;
+  }
+
   function recordDetails(record) {
     var details = document.createElement('details');
     details.appendChild(el('summary', null,
@@ -87,7 +102,7 @@ document.addEventListener('DOMContentLoaded', function () {
       return [el('p', 'muted', 'Type an expression first.')];
     }
     if (data.expression.error) {
-      nodes.push(el('p', 'test-error', data.expression.error));
+      errorNodes(data.expression).forEach(function (n) { nodes.push(n); });
     } else {
       nodes.push(el('pre', 'test-message', data.expression.value));
       nodes.push(el('p', 'muted',
@@ -116,9 +131,8 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     if (data.expression) {
       if (data.expression.error) {
-        nodes.push(el('p', 'test-error',
-                      'Expression failed: ' + data.expression.error +
-                      ' -- the alert would not fire.'));
+        errorNodes(data.expression).forEach(function (n) { nodes.push(n); });
+        nodes.push(el('p', 'muted', 'The alert would not fire.'));
       } else {
         nodes.push(el('p', data.expression.triggered ? 'test-ok' : 'test-idle',
                       data.expression.triggered
