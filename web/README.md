@@ -152,8 +152,14 @@ sudo nginx -t && sudo systemctl reload nginx
   expression, get back what it evaluates to (value, type, and whether that counts as true as
   a condition) plus the record it was evaluated against, so you can check a field's current
   value or what `to_C('outTemp')` gives you without wiring it into an alert first. Nothing
-  is saved and no message is sent -- it's a dry run of one evaluation pass. The expression
-  boxes are monospace and don't wrap, and a syntax error is reported the way a compiler
+  is saved and no message is sent -- it's a dry run of one evaluation pass. The expression and
+  template boxes are small code editors -- line numbers down the side, syntax highlighting
+  (strings, numbers, keywords, the language's own functions, and a template's `{...}`
+  placeholders), Tab to indent, Enter keeping the current indent, and the failing line
+  marked in the gutter after a test. No libraries are involved: it's a textarea with a
+  highlighted copy of its own text painted underneath, so it degrades to a plain textarea
+  if anything goes wrong, and nothing is fetched from a CDN (the panel is meant to work on
+  a LAN with no internet). They're monospace and don't wrap, and a syntax error is reported the way a compiler
   would: the line, a caret under the column, and the message. Expressions may span several
   lines (they're compiled wrapped in parentheses), so a long condition can be broken up and
   indented like real code -- in the service too, not just in the panel. To keep the

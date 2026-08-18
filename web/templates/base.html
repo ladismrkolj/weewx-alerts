@@ -45,14 +45,85 @@
     color: inherit;
   }
   textarea { resize: vertical; }
-  textarea.code-input {
+  /* The code boxes: a textarea with a line-number gutter and a highlighted
+     copy of its own text painted underneath it. The <pre>, the <textarea>
+     and the gutter must agree on every metric that affects layout -- font,
+     size, line height, padding, wrapping -- or the highlighting drifts out
+     from under the caret, so those are set once, together. */
+  .code-editor .code-gutter,
+  .code-editor .code-highlight,
+  .code-editor textarea.code-input {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-    font-size: 0.88rem;
+    font-size: 0.85rem;
     line-height: 1.5;
     tab-size: 4;
-    /* wrap="off" on the expression boxes: a wrapped line would make the
-       line numbers in a syntax error meaningless. */
-    overflow-x: auto;
+    white-space: pre;
+    word-wrap: normal;
+    padding: 0.45rem 0.55rem;
+    margin: 0;
+    border: 0;
+  }
+  .code-editor {
+    display: flex;
+    align-items: stretch;
+    margin-top: 0.3rem;
+    border: 1px solid #8886;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .code-editor:focus-within { border-color: #4c8bf5aa; }
+  .code-gutter {
+    flex: 0 0 auto;
+    overflow: hidden;
+    text-align: right;
+    user-select: none;
+    background: #8881;
+    opacity: 0.55;
+  }
+  .code-gutter div.err { color: #c0392b; opacity: 1; font-weight: 600; }
+  .code-stack { position: relative; flex: 1 1 auto; min-width: 0; }
+  .code-editor .code-highlight,
+  .code-editor textarea.code-input {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    border-radius: 0;
+    background: transparent;
+    overflow: auto;
+  }
+  .code-editor .code-highlight {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+    color: inherit;
+  }
+  .code-editor textarea.code-input {
+    position: relative;
+    /* Transparent text over the highlighted copy -- the caret, selection
+       and undo history all still belong to the textarea, which is what
+       keeps normal editing (and mobile keyboards) working. */
+    color: transparent;
+    caret-color: currentColor;
+    resize: none;
+  }
+  .code-editor textarea.code-input::selection { background: #4c8bf555; }
+  /* The textarea's own text is transparent (the highlighted copy shows
+     through), so the placeholder needs a real colour of its own or it
+     would be invisible too. */
+  .code-editor textarea.code-input::placeholder { color: #8888; opacity: 1; }
+  .tok-str, .tok-num { color: #b06a1e; }
+  .tok-kw { color: #a052c0; }
+  .tok-fn { color: #2f7bd6; }
+  .tok-builtin { color: #2f9e7e; }
+  .tok-op { opacity: 0.7; }
+  .tok-brace { color: #a052c0; font-weight: 600; }
+  .tok-err { color: #c0392b; text-decoration: underline wavy #c0392b; }
+  @media (prefers-color-scheme: dark) {
+    .tok-str, .tok-num { color: #e0a060; }
+    .tok-kw { color: #c792ea; }
+    .tok-fn { color: #82aaff; }
+    .tok-builtin { color: #6fd6b0; }
   }
   pre.code-frame {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
