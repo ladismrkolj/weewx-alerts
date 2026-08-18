@@ -152,7 +152,12 @@ sudo nginx -t && sudo systemctl reload nginx
   expression, get back what it evaluates to (value, type, and whether that counts as true as
   a condition) plus the record it was evaluated against, so you can check a field's current
   value or what `to_C('outTemp')` gives you without wiring it into an alert first. Nothing
-  is saved and no message is sent -- it's a dry run of one evaluation pass. The expression and
+  is saved and no message is sent -- it's a dry run of one evaluation pass. **Send test
+  message** is the one button that does leave the browser: it renders the same message and
+  delivers it over the channels ticked in the editor (confirming first, and reporting the
+  outcome per channel), so you can see how it actually looks on your phone. It still saves
+  nothing and touches no state file, so a test send never counts as the alert having fired
+  -- no cooldown is started, and the alert doesn't even have to be saved yet. The expression and
   template boxes are small code editors -- line numbers down the side, syntax highlighting
   (strings, numbers, keywords, the language's own functions, and a template's `{...}`
   placeholders), Tab to indent, Enter keeping the current indent, and the failing line

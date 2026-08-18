@@ -677,6 +677,79 @@ def test_alert(user_id):
     return jsonify(result)
 
 
+@app.route('/u/<user_id>/alerts/send_test', methods=['POST'])
+def send_test(user_id):
+    """Render the template against the latest archive record and actually
+    send it over the channels ticked in the editor, reporting the outcome
+    per channel.
+
+    Deliberately separate from /alerts/test (which only ever previews):
+    this one leaves the browser and puts a message on someone's phone, so
+    it hangs off its own button rather than happening as a side effect of
+    testing. Nothing is saved either way -- the alert doesn't have to exist
+    yet, and its cooldown/state is untouched, so a test send never counts
+    as the real alert having fired."""
+    template = request.form.get('template') or ''
+    alert_id = (request.form.get('id') or '').strip() or 'test_alert'
+    channels = request.form.getlist('channels')
+
+    if not template.strip():
+        return jsonify({'ok': False, 'error': 'Nothing to send -- the template is empty.'})
+    if not channels:
+        return jsonify({'ok': False,
+                        'error': 'No channels ticked -- tick at least one to send a test.'})
+
+    record = latest_archive_record()
+    if record is None:
+        return jsonify({'ok': False,
+                        'error': "No archive record to render against -- couldn't read "
+                                 "the station database, or it has no rows yet."})
+    try:
+        namespace = build_namespace(record)
+        worker = worker_module()
+    except RuntimeError as e:
+        return jsonify({'ok': False, 'error': str(e)})
+
+    errors = []
+    try:
+        text = worker.render_template(template, dict(namespace), alert_id, errors)
+    except TypeError:
+        text = worker.render_template(template, dict(namespace), alert_id)
+    subject = (request.form.get('subject') or '').strip() or \
+        'WeeWX alert: %s (test)' % alert_id
+
+    # The saved config is where channel credentials live -- the editor form
+    # only says *which* channels to use.
+    cfg = load_json(user_path(user_id)) or {}
+    channels_cfg = cfg.get('channels', {})
+
+    sent = []
+    for name in channels:
+        sender = worker.Channels.DISPATCH.get(name)
+        if sender is None:
+            sent.append({'channel': name, 'error': 'Unknown channel.'})
+            continue
+        chan_cfg = channels_cfg.get(name)
+        if not chan_cfg:
+            sent.append({'channel': name,
+                         'error': "Not set up yet -- no connection settings saved for "
+                                  "this channel."})
+            continue
+        try:
+            # Synchronous, unlike the service's background thread: the whole
+            # point of a test send is to find out whether it worked.
+            sender(chan_cfg, subject, text)
+            sent.append({'channel': name, 'ok': True})
+        except Exception as e:
+            sent.append({'channel': name, 'error': '%s: %s' % (type(e).__name__, e)})
+
+    return jsonify({'ok': True, 'text': text, 'errors': errors, 'sent': sent,
+                    'subject': subject,
+                    'record_time': time.strftime('%Y-%m-%d %H:%M:%S',
+                                                 time.localtime(record['dateTime']))
+                    if 'dateTime' in record else None})
+
+
 # -- routes: alert CRUD --------------------------------------------------------
 
 @app.route('/u/<user_id>/alerts/save', methods=['POST'])

@@ -196,6 +196,67 @@ document.addEventListener('DOMContentLoaded', function () {
     btn.addEventListener('click', function () { run(btn); });
   });
 
+  // "Send test message": same render, but it actually goes out over the
+  // ticked channels, so it confirms first and reports per channel.
+  function renderSend(data) {
+    if (!data.ok) {
+      return [el('p', 'test-error', data.error)];
+    }
+    var nodes = [];
+    if (data.record_time) {
+      nodes.push(el('p', 'muted', 'Rendered from the archive record from ' +
+                                  data.record_time + '.'));
+    }
+    nodes.push(el('pre', 'test-message', data.text));
+    (data.errors || []).forEach(function (e) {
+      nodes.push(el('p', 'test-error',
+                    '{' + e.field + '} failed (' + e.error +
+                    ') -- it stays in the message as literal text.'));
+    });
+    (data.sent || []).forEach(function (r) {
+      nodes.push(r.ok
+        ? el('p', 'test-ok', 'Sent via ' + r.channel + '.')
+        : el('p', 'test-error', r.channel + ' failed: ' + r.error));
+    });
+    return nodes;
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll('.js-send'), function (btn) {
+    btn.addEventListener('click', function () {
+      var form = btn.closest('form');
+      var out = document.getElementById('test-result');
+      var checked = Array.prototype.filter.call(
+        form.querySelectorAll('[name=channels]'), function (c) { return c.checked; });
+      if (!checked.length) {
+        show(out, [el('p', 'test-error',
+                      'Tick at least one channel above to send a test to.')]);
+        return;
+      }
+      var names = checked.map(function (c) { return c.value; }).join(', ');
+      if (!window.confirm('Send this message for real over: ' + names + '?')) {
+        return;
+      }
+      var params = new URLSearchParams({
+        id: form.querySelector('[name=id]').value,
+        template: form.querySelector('[name=template]').value
+      });
+      checked.forEach(function (c) { params.append('channels', c.value); });
+      btn.disabled = true;
+      show(out, [el('p', 'muted', 'Sending…')]);
+      fetch(btn.dataset.sendUrl, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: params.toString()
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (data) { show(out, renderSend(data)); })
+        .catch(function (e) {
+          show(out, [el('p', 'test-error', "Couldn't reach the panel: " + e)]);
+        })
+        .finally(function () { btn.disabled = false; });
+    });
+  });
+
   // Ctrl/Cmd+Enter in the debugger box evaluates, so it behaves like the
   // REPL it stands in for.
   var debugForm = document.getElementById('debug-form');

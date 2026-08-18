@@ -261,11 +261,16 @@
             data-test-url="{{ url_for('test_alert', user_id=user_id) }}">Test expression</button>
     <button type="button" class="btn-secondary js-test" data-test="template"
             data-test-url="{{ url_for('test_alert', user_id=user_id) }}">Test template</button>
+    <button type="button" class="btn-secondary js-send"
+            data-send-url="{{ url_for('send_test', user_id=user_id) }}">Send test message</button>
     <a class="btn-secondary" href="{{ url_for('dashboard', user_id=user_id) }}">Cancel</a>
   </form>
-  <p class="muted">Both test buttons run against your station's most recent archive record --
-    "Test expression" says whether the alert would fire right now, "Test template" shows the
-    message it would send. Nothing is saved and no message is sent.</p>
+  <p class="muted">All three buttons run against your station's most recent archive record.
+    "Test expression" says whether the alert would fire right now and "Test template" shows
+    the message it would send -- neither saves anything or sends anything. "Send test
+    message" renders the same message and actually delivers it over the channels ticked
+    above, so you can see how it looks on your phone; it still saves nothing, and it doesn't
+    count as the alert having fired (no cooldown is started).</p>
   <div id="test-result" hidden></div>
 </section>
 {% endif %}
