@@ -139,10 +139,22 @@ sudo nginx -t && sudo systemctl reload nginx
 
 - Reads `users_dir` out of the same `weewx.conf` / `[UserAlerts]` section the plugin itself
   uses, via `weecfg.read_config` -- one source of truth, nothing hardcoded.
-- Never imports or runs `bin/user/useralerts.py`. It only reads/writes the JSON files under
-  `users_dir`, atomically (temp file + `os.replace`) -- the same contract described in that
-  file's own header comment, which is what makes it safe to run this alongside a live `weewxd`
-  with no locking. It never touches `state_dir`, which only the running service owns.
+- Only ever reads/writes the JSON files under `users_dir`, atomically (temp file +
+  `os.replace`) -- the same contract described in `bin/user/useralerts.py`'s own header
+  comment, which is what makes it safe to run this alongside a live `weewxd` with no
+  locking. It never touches `state_dir`, which only the running service owns, and it never
+  runs the service.
+- **Test button** (in the alert editor): evaluates the expression you've typed and renders
+  the template against your station's *latest archive record*, and reports whether the alert
+  would fire, what the message would look like, and the exact error behind any placeholder
+  that failed. Nothing is saved and no message is sent -- it's a dry run of one evaluation
+  pass. To keep the panel's answer and the service's behaviour from drifting apart, it
+  imports `useralerts.py` (the installed `user.useralerts` if importable, otherwise the copy
+  in this checkout) and reuses its `Aggregator` / `UnitConverter` / `render_template`, so
+  `avg()`, `to_C()`, `compass()` and the rest mean exactly what they mean in production. The
+  archive database is opened read-only (SQLite `mode=ro`), so this never contends with
+  `weewxd`; on a non-SQLite backend the test button reports that it has no record to test
+  against, and everything else in the panel works as before.
 - Telegram connect: validates the pasted bot token via `getMe`, shows a
   `t.me/<bot>?start=<code>` deep link + QR code, then polls `getUpdates` looking for a matching
   `/start <code>` message to learn the resulting `chat_id`. No incoming webhook needed, so this

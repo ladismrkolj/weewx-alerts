@@ -7,11 +7,13 @@ bot (paste token -> scan/tap a QR/deep-link -> chat_id discovered
 automatically), and add/edit/delete their alerts -- all without hand-editing
 JSON or running tools/get_chat_id.py by hand.
 
-Deliberately decoupled from bin/user/useralerts.py: this process never
-imports or runs it, and only ever reads/writes files under `users_dir`
-(never `state_dir`, which is owned by the running weewxd service). See that
-file's header comment for why that split makes the two processes safe to
-run concurrently with no locking.
+Deliberately decoupled from bin/user/useralerts.py: this process never runs
+it as a service, and only ever reads/writes files under `users_dir` (never
+`state_dir`, which is owned by the running weewxd service). See that file's
+header comment for why that split makes the two processes safe to run
+concurrently with no locking. The one exception is the alert editor's "Test"
+button, which imports that module read-only to borrow its expression /
+template evaluation -- see worker_module() below.
 
 Security model: NO PASSWORD. Typing a name opens or creates that config.
 This is only safe on a trusted home/LAN deployment -- see web/README.md
@@ -98,6 +100,13 @@ DEFAULT_BOT_TOKEN = ''
 # setup, ...), in which case the template falls back to a generic example
 # list instead.
 ARCHIVE_FIELDS = None
+
+# (db_path, table_name) for the station's archive database, from
+# resolve_archive_db_path() at startup. Used read-only, both for the
+# cheatsheet's field list and for the "Test" button (which needs a real
+# record to evaluate an expression/template against). (None, 'archive') if
+# the database couldn't be located.
+ARCHIVE_DB = (None, 'archive')
 
 # [(unit_name, unit_label), ...] for every unit convert()/unit= will accept,
 # e.g. ('degree_C', '°C'). Set once at startup in main() -- see
@@ -441,6 +450,176 @@ def telegram_status(user_id):
     return jsonify({'connected': False, 'pending': True})
 
 
+# -- "Test" button: evaluate an expression/template for real ----------------
+#
+# This is the one place the panel needs the worker's *language*, as opposed
+# to its files: re-implementing eval/render here would guarantee the test
+# button and the running service eventually disagree about what an
+# expression means. So bin/user/useralerts.py is imported (by path -- it
+# doesn't have to be on sys.path) and its own Aggregator / UnitConverter /
+# render_template are used. That's still read-only towards the service: no
+# state file is touched, nothing is sent, and the module is only imported,
+# never instantiated as a weewx service.
+
+_WORKER = None
+
+
+def worker_module():
+    """Import bin/user/useralerts.py (a sibling of this repo's web/ dir, or
+    wherever it was installed alongside) and cache it. Raises RuntimeError
+    with a human-readable reason if it can't be loaded -- e.g. weewx isn't
+    importable from this process."""
+    global _WORKER
+    if _WORKER is not None:
+        return _WORKER
+    import importlib
+    import importlib.util
+    try:
+        # The installed copy under BIN_ROOT/user -- i.e. the exact code
+        # weewxd is running, which is what a test should agree with.
+        module = importlib.import_module('user.useralerts')
+        if hasattr(module, 'render_template'):   # not some unrelated user/ package
+            _WORKER = module
+            return _WORKER
+    except Exception:
+        pass
+    # Not installed / not importable from this process: fall back to the
+    # copy in this checkout, one directory up from web/.
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        '..', 'bin', 'user', 'useralerts.py')
+    path = os.path.normpath(path)
+    if not os.path.isfile(path):
+        raise RuntimeError("Couldn't import user.useralerts, and there's no "
+                           "useralerts.py at %s either." % path)
+    try:
+        spec = importlib.util.spec_from_file_location('useralerts_worker', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception as e:
+        raise RuntimeError("Couldn't load %s: %s" % (path, e))
+    _WORKER = module
+    return _WORKER
+
+
+class ReadOnlyDbManager:
+    """The slice of a weewx db_manager that Aggregator uses -- table_name
+    and getSql() -- backed by a read-only SQLite connection, so avg() and
+    friends work in a test run without going anywhere near weewxd's
+    write path."""
+
+    def __init__(self, db_path, table_name):
+        self.db_path = db_path
+        self.table_name = table_name
+
+    def getSql(self, sql, params=()):
+        uri = 'file:%s?mode=ro' % urllib.parse.quote(self.db_path)
+        conn = sqlite3.connect(uri, uri=True, timeout=5)
+        try:
+            return conn.execute(sql, params).fetchone()
+        finally:
+            conn.close()
+
+
+def latest_archive_record():
+    """The most recent archive row as a dict, shaped like the record weewx
+    hands the service: NULL columns are dropped, so a field that isn't
+    really being reported raises NameError in an expression here exactly as
+    it would in production. Returns None if there's no readable database or
+    no rows in it."""
+    db_path, table_name = ARCHIVE_DB
+    if not db_path or not os.path.isfile(db_path):
+        return None
+    try:
+        uri = 'file:%s?mode=ro' % urllib.parse.quote(db_path)
+        conn = sqlite3.connect(uri, uri=True, timeout=5)
+        try:
+            cur = conn.execute(
+                'SELECT * FROM %s ORDER BY dateTime DESC LIMIT 1' % table_name)
+            row = cur.fetchone()
+            if row is None:
+                return None
+            names = [d[0] for d in cur.description]
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    return {name: value for name, value in zip(names, row) if value is not None}
+
+
+def build_namespace(record):
+    """The same eval namespace UserAlerts._process_alert() builds: record
+    fields + aggregates + unit conversions + compass() + local time/date."""
+    worker = worker_module()
+    db_path, table_name = ARCHIVE_DB
+    namespace = dict(record)
+    if db_path:
+        aggregator = worker.Aggregator(ReadOnlyDbManager(db_path, table_name),
+                                       record['dateTime'], record.get('usUnits'))
+        namespace.update(aggregator.as_namespace())
+    namespace.update(worker.UnitConverter(record).as_namespace())
+    namespace['compass'] = worker.make_compass(record)
+    if 'dateTime' in record:
+        for key, value in worker.time_namespace(record['dateTime']).items():
+            namespace.setdefault(key, value)
+    return namespace
+
+
+@app.route('/u/<user_id>/alerts/test', methods=['POST'])
+def test_alert(user_id):
+    """Evaluate an expression and render a template against the latest real
+    archive record, and report what happened -- without saving anything,
+    touching the state file, or sending a message anywhere."""
+    expression = (request.form.get('expression') or '').strip()
+    template = request.form.get('template') or ''
+    alert_id = (request.form.get('id') or '').strip() or 'test_alert'
+
+    record = latest_archive_record()
+    if record is None:
+        return jsonify({'ok': False,
+                        'error': "No archive record to test against -- couldn't read "
+                                 "the station database, or it has no rows yet."})
+    try:
+        namespace = build_namespace(record)
+    except RuntimeError as e:
+        return jsonify({'ok': False, 'error': str(e)})
+
+    worker = worker_module()
+    result = {
+        'ok': True,
+        'record_time': time.strftime('%Y-%m-%d %H:%M:%S',
+                                     time.localtime(record['dateTime']))
+        if 'dateTime' in record else None,
+    }
+
+    if expression:
+        try:
+            value = eval(expression, {'__builtins__': worker.SAFE_BUILTINS},
+                         dict(namespace))
+            result['expression'] = {'triggered': bool(value),
+                                    'value': repr(value)}
+        except Exception as e:
+            # Same outcome the service would have -- "didn't trigger" -- but
+            # here the reason is the whole point, so it's reported instead of
+            # only logged. A NameError is usually a typo, but can also just
+            # be a field this particular record doesn't carry.
+            result['expression'] = {'error': '%s: %s' % (type(e).__name__, e)}
+
+    if template:
+        errors = []
+        # dateTime_str / alert_id are injected by render_template itself, so
+        # the preview shows exactly what would be sent.
+        try:
+            text = worker.render_template(template, dict(namespace), alert_id, errors)
+        except TypeError:
+            # An older installed useralerts.py without the errors= argument:
+            # still preview the text, just without the per-placeholder
+            # reasons (a failed placeholder shows up as literal {...}).
+            text = worker.render_template(template, dict(namespace), alert_id)
+        result['template'] = {'text': text, 'errors': errors}
+
+    return jsonify(result)
+
+
 # -- routes: alert CRUD --------------------------------------------------------
 
 @app.route('/u/<user_id>/alerts/save', methods=['POST'])
@@ -509,7 +688,7 @@ def delete_alert(user_id):
 # -- entry point ----------------------------------------------------------------
 
 def main():
-    global USERS_DIR, DEFAULT_BOT_TOKEN, ARCHIVE_FIELDS, ALL_UNITS
+    global USERS_DIR, DEFAULT_BOT_TOKEN, ARCHIVE_FIELDS, ALL_UNITS, ARCHIVE_DB
 
     parser = argparse.ArgumentParser(description="UserAlerts config web panel")
     parser.add_argument('--config', dest='config_path', metavar='CONFIG_FILE',
@@ -536,6 +715,7 @@ def main():
     url_path = web_dict.get('url_path', '/')
 
     db_path, table_name = resolve_archive_db_path(config_dict)
+    ARCHIVE_DB = (db_path, table_name)
     ARCHIVE_FIELDS = fetch_archive_fields(db_path, table_name)
     ALL_UNITS = list_all_units()
 

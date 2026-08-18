@@ -250,8 +250,13 @@
       <input type="number" name="time_wait" min="0" value="{{ edit_alert.time_wait }}">
     </label>
     <button type="submit">Save</button>
+    <button type="button" class="btn-secondary" id="test-alert"
+            data-test-url="{{ url_for('test_alert', user_id=user_id) }}">Test</button>
     <a class="btn-secondary" href="{{ url_for('dashboard', user_id=user_id) }}">Cancel</a>
   </form>
+  <p class="muted">Test evaluates the expression and renders the template against your
+    station's most recent archive record. Nothing is saved and no message is sent.</p>
+  <div id="test-result" hidden></div>
 </section>
 {% endif %}
 
