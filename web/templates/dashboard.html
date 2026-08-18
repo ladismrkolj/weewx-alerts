@@ -254,15 +254,33 @@
                 spellcheck="false" autocapitalize="off" autocorrect="off"
                 autocomplete="off" wrap="off">{{ edit_alert.template }}</textarea>
     </label>
-    <label>snapshot image URL (optional)
+    <label class="checkbox">
+      <input type="checkbox" name="image_enabled"
+             {% if edit_alert.get('image_enabled', True) %}checked{% endif %}>
+      attach a webcam snapshot
+    </label>
+    <p class="muted">A still frame fetched when the alert fires and sent with the message --
+      a photo on Telegram, an attachment on email. If the camera is down or slow the message
+      still goes, just without the picture. Untick to keep this alert text-only.</p>
+    <label>snapshot image URL
       <input type="text" name="image_url" value="{{ edit_alert.get('image_url', '') }}"
              placeholder="{{ default_image_url or 'http://192.168.1.47:1984/api/frame.jpeg?src=cam1' }}">
     </label>
-    <p class="muted">A still frame fetched when the alert fires and sent with the message --
-      a photo on Telegram, an attachment on email. Any URL that returns an image works; a
-      go2rtc/frigate box serves one at
-      <code>http://&lt;host&gt;:1984/api/frame.jpeg?src=&lt;camera&gt;</code>. If the camera
-      is down or slow the message still goes, just without the picture.</p>
+    <p class="muted">
+      {% if default_image_url %}
+      Leave blank to use the station camera set in weewx.conf
+      (<code>{{ default_image_url }}</code>) -- then if that ever moves, every alert follows
+      it. Fill it in only to point this one alert at a different camera.
+      {% else %}
+      Any URL that returns an image works; a go2rtc/frigate box serves one at
+      <code>http://&lt;host&gt;:1984/api/frame.jpeg?src=&lt;camera&gt;</code>. Set
+      <code>default_image_url</code> in weewx.conf's <code>[UserAlerts]</code> to have this
+      box default to your station camera instead of typing it into every alert.
+      {% endif %}
+      The URL is fetched by the WeeWX host and the image is uploaded to the channel, so a
+      LAN address like <code>192.168.1.47</code> is fine -- nothing outside your network
+      ever sees it.
+    </p>
     <label class="checkbox">
       <input type="checkbox" name="image_compress"
              {% if edit_alert.get('image_compress', True) %}checked{% endif %}> shrink before sending
