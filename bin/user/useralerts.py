@@ -57,6 +57,7 @@
 #       "expression": "outTemp < 32.0",
 #       "template": "Freeze warning! outTemp={outTemp:.1f}F at {dateTime_str}",
 #       "subject": "WeeWX: freeze warning",
+#       "image_url": "http://192.168.1.47:1984/api/frame.jpeg?src=cam1",
 #       "channels": ["telegram", "email"],
 #       "time_wait": 3600
 #     },
@@ -138,6 +139,30 @@
 #     template placeholder); they never crash the service or affect other
 #     alerts/users.
 #
+# Snapshot image  (optional)
+#
+#   - "image_url" attaches a picture to the alert: it is fetched at send
+#     time and goes out with the message -- as a photo on telegram, as an
+#     attachment on email. Typically a webcam's still-frame endpoint, e.g.
+#     "http://192.168.1.47:1984/api/frame.jpeg?src=cam1" (go2rtc). Any URL
+#     that returns an image works.
+#   - The frame is fetched once per alert and shared by every channel, in
+#     the same background thread that does the sending, so a slow camera
+#     never holds up the archive loop.
+#   - A camera that is unreachable, slow, or serving something that isn't an
+#     image is logged and the message is sent anyway, without the picture --
+#     losing a freeze warning because a webcam is down would be a bad trade.
+#   - By default the frame is shrunk before sending: scaled down to
+#     "image_max_width" (default 1280, never scaled up) and re-encoded as
+#     JPEG at "image_quality" (default 70). Set "image_compress": false to
+#     send the camera's own bytes untouched. Compression needs Pillow, which
+#     is NOT a dependency of this plugin -- without it the original bytes are
+#     sent and a debug line is logged.
+#
+#     "image_url": "http://192.168.1.47:1984/api/frame.jpeg?src=cam1",
+#     "image_max_width": 1280,
+#     "image_quality": 70
+#
 # Subject
 #
 #   - "subject" is optional, and is used by channels that have a notion of
@@ -192,6 +217,8 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from email.mime.image import MIMEImage
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 import weewx
@@ -397,29 +424,160 @@ def time_namespace(ts):
     }
 
 
+# -- snapshot images ---------------------------------------------------------
+#
+# An alert may name an "image_url" -- typically a webcam's still-frame
+# endpoint, e.g. http://192.168.1.47:1984/api/frame.jpeg?src=cam1 on a
+# go2rtc/frigate box. When it does, that frame is fetched at send time and
+# goes out with the message: as a photo on telegram, as an attachment on
+# email. A camera that's unreachable, slow or serving something that isn't
+# an image is never fatal -- the message still goes, just without a picture.
+
+DEFAULT_IMAGE_TIMEOUT = 10       # seconds to wait for the camera
+MAX_IMAGE_BYTES = 20 * 1024 * 1024   # refuse anything absurd from a bad URL
+DEFAULT_IMAGE_MAX_WIDTH = 1280   # resized down to this before sending
+DEFAULT_IMAGE_QUALITY = 70       # JPEG quality when recompressing
+
+
+def fetch_image(url, timeout=DEFAULT_IMAGE_TIMEOUT):
+    """GET `url` and return (bytes, content_type), or raise. Reads at most
+    MAX_IMAGE_BYTES so a misconfigured URL (a video stream, say) can't sit
+    there filling memory."""
+    req = urllib.request.Request(url, headers={'User-Agent': 'weewx-useralerts'})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        content_type = (resp.headers.get('Content-Type') or '').split(';')[0].strip()
+        data = resp.read(MAX_IMAGE_BYTES + 1)
+    if len(data) > MAX_IMAGE_BYTES:
+        raise ValueError("Image at %s is larger than %d bytes"
+                          % (url, MAX_IMAGE_BYTES))
+    if not data:
+        raise ValueError("Image at %s was empty" % url)
+    if content_type and not content_type.startswith('image/'):
+        raise ValueError("%s returned %s, not an image" % (url, content_type))
+    return data, content_type or 'image/jpeg'
+
+
+def compress_image(data, max_width=DEFAULT_IMAGE_MAX_WIDTH,
+                    quality=DEFAULT_IMAGE_QUALITY):
+    """Shrink a snapshot for sending: scale down to max_width (never up) and
+    re-encode as JPEG at `quality`. Returns (bytes, content_type).
+
+    Needs Pillow, which is NOT a dependency of this plugin -- without it (or
+    if the image can't be decoded, or if compressing made it bigger, which
+    happens with an already-tiny frame) the original bytes are returned
+    unchanged. Shrinking is a nicety; sending the picture at all is the
+    feature."""
+    try:
+        import io
+        from PIL import Image
+    except ImportError:
+        log.debug("Pillow not installed; sending the snapshot uncompressed")
+        return data, None
+    try:
+        img = Image.open(io.BytesIO(data))
+        img.load()
+        if img.mode not in ('RGB', 'L'):
+            img = img.convert('RGB')
+        if max_width and img.width > max_width:
+            height = max(1, round(img.height * max_width / img.width))
+            img = img.resize((max_width, height), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format='JPEG', quality=int(quality), optimize=True)
+    except Exception as e:
+        log.debug("Could not compress snapshot, sending it as-is: %s", e)
+        return data, None
+    out = buf.getvalue()
+    if len(out) >= len(data):
+        return data, None
+    return out, 'image/jpeg'
+
+
+def alert_image(alert, timeout=DEFAULT_IMAGE_TIMEOUT):
+    """The snapshot to send with `alert`, as (bytes, content_type, filename),
+    or None if the alert has no image_url. Raises if the fetch itself failed
+    -- the caller decides whether that's worth aborting a send over (it
+    isn't: see _send_all)."""
+    url = (alert.get('image_url') or '').strip()
+    if not url:
+        return None
+    data, content_type = fetch_image(url, timeout)
+    if to_bool(alert.get('image_compress', True)):
+        data, new_type = compress_image(
+            data,
+            alert.get('image_max_width', DEFAULT_IMAGE_MAX_WIDTH),
+            alert.get('image_quality', DEFAULT_IMAGE_QUALITY))
+        content_type = new_type or content_type
+    ext = 'jpg' if 'jpeg' in content_type or 'jpg' in content_type \
+        else content_type.rsplit('/', 1)[-1] or 'jpg'
+    return data, content_type, 'snapshot.%s' % ext
+
+
+def encode_multipart(fields, file_field, filename, content_type, data):
+    """Build a multipart/form-data body by hand -- urllib has no equivalent
+    of requests' files=, and this plugin deliberately has no third-party
+    dependencies. Returns (body_bytes, content_type_header)."""
+    boundary = '----weewx%s' % os.urandom(12).hex()
+    out = []
+    for name, value in fields.items():
+        out.append(('--%s\r\n'
+                    'Content-Disposition: form-data; name="%s"\r\n\r\n'
+                    '%s\r\n' % (boundary, name, value)).encode())
+    out.append(('--%s\r\n'
+                'Content-Disposition: form-data; name="%s"; filename="%s"\r\n'
+                'Content-Type: %s\r\n\r\n' % (boundary, file_field, filename,
+                                                content_type)).encode())
+    out.append(data)
+    out.append(('\r\n--%s--\r\n' % boundary).encode())
+    return b''.join(out), 'multipart/form-data; boundary=%s' % boundary
+
+
+# Telegram rejects a photo caption longer than this; a longer message is
+# sent as its own text message after the photo instead of being truncated.
+TELEGRAM_CAPTION_LIMIT = 1024
+
+
 class Channels:
     """Static senders for each supported alert channel. Each takes the
-    channel's connection settings (from the user's config) and the
-    already-rendered message text."""
+    channel's connection settings (from the user's config), the
+    already-rendered message text, and optionally a snapshot image as
+    (bytes, content_type, filename) -- see alert_image()."""
 
     @staticmethod
-    def send_telegram(chan_cfg, subject, text):
+    def _telegram_post(bot_token, method, body, content_type=None):
+        url = "https://api.telegram.org/bot%s/%s" % (bot_token, method)
+        headers = {'Content-Type': content_type} if content_type else {}
+        req = urllib.request.Request(url, data=body, headers=headers)
+        with urllib.request.urlopen(req, timeout=DEFAULT_NET_TIMEOUT) as resp:
+            payload = resp.read()
+            if resp.status != 200:
+                raise IOError("Telegram API returned status %s: %s"
+                               % (resp.status, payload))
+
+    @staticmethod
+    def send_telegram(chan_cfg, subject, text, image=None):
         bot_token = chan_cfg.get('bot_token')
         chat_id = chan_cfg.get('chat_id')
         if not bot_token or not chat_id:
             raise ValueError("telegram channel missing bot_token/chat_id")
 
-        url = "https://api.telegram.org/bot%s/sendMessage" % bot_token
-        data = urllib.parse.urlencode({'chat_id': chat_id, 'text': text}).encode()
-        req = urllib.request.Request(url, data=data)
-        with urllib.request.urlopen(req, timeout=DEFAULT_NET_TIMEOUT) as resp:
-            body = resp.read()
-            if resp.status != 200:
-                raise IOError("Telegram API returned status %s: %s"
-                               % (resp.status, body))
+        if image is not None:
+            data, content_type, filename = image
+            # A caption over Telegram's limit would be truncated, so anything
+            # longer goes as its own message after the photo instead.
+            caption = text if len(text) <= TELEGRAM_CAPTION_LIMIT else ''
+            body, body_type = encode_multipart(
+                {'chat_id': chat_id, 'caption': caption},
+                'photo', filename, content_type, data)
+            Channels._telegram_post(bot_token, 'sendPhoto', body, body_type)
+            if caption:
+                return
+            # fall through and send the long text separately
+
+        body = urllib.parse.urlencode({'chat_id': chat_id, 'text': text}).encode()
+        Channels._telegram_post(bot_token, 'sendMessage', body)
 
     @staticmethod
-    def send_email(chan_cfg, subject, text):
+    def send_email(chan_cfg, subject, text, image=None):
         smtp_host = chan_cfg['smtp_host']
         smtp_user = chan_cfg.get('smtp_user')
         smtp_password = chan_cfg.get('smtp_password')
@@ -428,7 +586,16 @@ class Channels:
         if isinstance(to_addrs, str):
             to_addrs = [to_addrs]
 
-        msg = MIMEText(text)
+        if image is None:
+            msg = MIMEText(text)
+        else:
+            data, content_type, filename = image
+            msg = MIMEMultipart()
+            msg.attach(MIMEText(text))
+            subtype = content_type.rsplit('/', 1)[-1] or 'jpeg'
+            part = MIMEImage(data, _subtype=subtype)
+            part.add_header('Content-Disposition', 'attachment', filename=filename)
+            msg.attach(part)
         msg['Subject'] = subject
         msg['From'] = from_addr
         msg['To'] = ','.join(to_addrs)
@@ -726,12 +893,26 @@ class UserAlerts(StdService):
         t = threading.Thread(
             target=self._send_all,
             args=(user_id, alert_id, channel_names, channels_cfg,
-                  subject, text),
+                  subject, text, alert),
             daemon=True)
         t.start()
 
     def _send_all(self, user_id, alert_id, channel_names, channels_cfg,
-                  subject, text):
+                  subject, text, alert=None):
+        # Fetched once here, in the sending thread, and shared by every
+        # channel -- one camera hit per alert, not one per channel. A camera
+        # that's down, slow or serving junk must never cost you the alert
+        # itself, so a failure here is logged and the message goes without
+        # the picture.
+        image = None
+        if alert:
+            try:
+                image = alert_image(alert)
+            except Exception as e:
+                log.warning("UserAlerts: user '%s' alert '%s': could not fetch "
+                            "the snapshot from %s (%s) -- sending without it",
+                            user_id, alert_id, alert.get('image_url'), e)
+
         for name in channel_names:
             sender = Channels.DISPATCH.get(name)
             if sender is None:
@@ -745,7 +926,7 @@ class UserAlerts(StdService):
                             user_id, alert_id, name)
                 continue
             try:
-                sender(chan_cfg, subject, text)
+                sender(chan_cfg, subject, text, image)
                 log.info("UserAlerts: user '%s' alert '%s' sent via %s",
                           user_id, alert_id, name)
             except Exception as e:
@@ -816,8 +997,12 @@ if __name__ == '__main__':
 
     if options.dry_run:
         Channels.DISPATCH = {
-            'telegram': lambda cfg, subj, text: print("[DRY RUN telegram]", text),
-            'email': lambda cfg, subj, text: print("[DRY RUN email]", subj, text),
+            'telegram': lambda cfg, subj, text, image=None: print(
+                "[DRY RUN telegram]", text,
+                "(+%d byte snapshot)" % len(image[0]) if image else ''),
+            'email': lambda cfg, subj, text, image=None: print(
+                "[DRY RUN email]", subj, text,
+                "(+%d byte snapshot)" % len(image[0]) if image else ''),
         }
 
     db_manager = engine.db_binder.get_manager()

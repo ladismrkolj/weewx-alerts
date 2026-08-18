@@ -152,7 +152,11 @@ sudo nginx -t && sudo systemctl reload nginx
   expression, get back what it evaluates to (value, type, and whether that counts as true as
   a condition) plus the record it was evaluated against, so you can check a field's current
   value or what `to_C('outTemp')` gives you without wiring it into an alert first. Nothing
-  is saved and no message is sent -- it's a dry run of one evaluation pass. The editor also
+  is saved and no message is sent -- it's a dry run of one evaluation pass. If the alert has
+  a **snapshot image URL**, testing the template also fetches that frame and shows it, with
+  what it cost: how long the camera took, and what shrinking saved (e.g. "976 kB from the
+  camera, sent as 147 kB (85% smaller)"). A camera that fails is reported and the message
+  still sends without a picture, exactly as the service behaves. The editor also
   has a `subject` box (rendered as a template too, and used only by channels that have a
   subject line -- email does, Telegram doesn't); leaving it blank stores no `subject` at
   all, so the alert keeps taking the service's default wording. **Send test
