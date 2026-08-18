@@ -153,6 +153,15 @@
         </li>
         <li><strong>Safe builtins</strong> -- <code>abs()</code>, <code>round()</code>,
           <code>min()</code>, <code>max()</code>, <code>len()</code></li>
+        <li><strong>Wind direction names</strong> -- <code>compass(windDir)</code> turns
+          degrees into a direction name: <code>NW</code>. A second argument picks how many
+          points: <code>compass(windDir, 4)</code> for N/E/S/W,
+          <code>8</code> (the default) for NE/SE/SW/NW as well, <code>16</code> for
+          NNE/ENE/... too. Takes either the degrees, <code>compass(windDir)</code>, or the
+          name of a field to read them from, <code>compass('windDir')</code>. Rounds to the
+          nearest sector and wraps at 360, so 350 and 10 are both <code>N</code>. Returns
+          <code>None</code> (never an error) for a missing or non-numeric value. Mostly
+          useful in a template.</li>
         <li><strong>Time &amp; date</strong> -- the record's timestamp, broken out as plain
           numbers in <em>local time</em> on the WeeWX host (the same clock
           <code>{dateTime_str}</code> uses, so DST is handled for you):
@@ -204,7 +213,8 @@
       <p><strong>Examples</strong><br>
         <code>Freeze warning! outTemp={outTemp:.1f}F at {dateTime_str}</code><br>
         <code>Alert {alert_id} fired: windSpeed={windSpeed}</code><br>
-        <code>Wind {windSpeed:.0f} from {'N' if windDir &gt;= 330 or windDir &lt; 30 else 'E' if windDir &lt; 120 else 'S' if windDir &lt; 210 else 'W' if windDir &lt; 300 else 'NW'}</code><br>
+        <code>Wind {windSpeed:.0f} from {compass(windDir)}</code><br>
+        <code>Wind from {compass(windDir, 16)} ({windDir:.0f} deg)</code><br>
         <code>{'Overnight' if hour &gt;= 22 or hour &lt; 6 else 'Daytime'} freeze at {dateTime_str}</code></p>
       <p class="muted">Use <strong>single</strong> quotes for text inside a placeholder, as
         above. What you type here is stored as-is, so single quotes always work. Double
