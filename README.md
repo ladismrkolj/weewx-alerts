@@ -96,14 +96,27 @@ The second alert shows three things worth knowing:
 `image_url` is optional: a still frame fetched when the alert fires and sent with the
 message -- a photo on Telegram, an attachment on email. Any URL that returns an image
 works; a go2rtc/frigate box serves one at
-`http://<host>:1984/api/frame.jpeg?src=<camera>`. The frame is fetched once per alert, in
+`http://<host>:1984/api/frame.jpeg?src=<camera>`. The WeeWX host fetches the URL and
+uploads the image bytes to the channel, so a LAN address is fine -- nothing outside your
+network ever sees the URL.
+
+Rather than repeating that URL on every alert, set it once in `weewx.conf`:
+
+```ini
+[UserAlerts]
+    default_image_url = http://192.168.1.47:1984/api/frame.jpeg?src=cam1
+```
+
+Any alert without its own `image_url` then sends that frame, and if the camera ever moves
+they all follow. To keep one alert text-only, set `"image_enabled": false` on it. The frame is fetched once per alert, in
 the same background thread that sends, and a camera that's down or slow is logged and the
 message goes out without the picture -- losing a freeze warning because a webcam is
 unreachable would be a bad trade. By default it's shrunk first (`"image_max_width": 1280`,
 `"image_quality": 70`, both overridable; `"image_compress": false` sends the camera's own
 bytes). Shrinking needs [Pillow](https://pypi.org/project/pillow/) on the WeeWX host --
 without it the original bytes are sent and nothing breaks. A station-wide default for the
-panel's snapshot box can be set with `default_image_url` in `[UserAlerts]`.
+In the web panel this is an "attach a webcam snapshot" checkbox plus an optional URL box
+(blank = the station camera).
 
 `subject` is optional and rendered with the same template language as `template`. Only
 channels that have a subject line use it -- email puts it in the Subject header, Telegram
