@@ -566,9 +566,15 @@ def build_namespace(record):
 
 @app.route('/u/<user_id>/alerts/test', methods=['POST'])
 def test_alert(user_id):
-    """Evaluate an expression and render a template against the latest real
-    archive record, and report what happened -- without saving anything,
-    touching the state file, or sending a message anywhere."""
+    """Evaluate an expression and/or render a template against the latest
+    real archive record, and report what happened -- without saving
+    anything, touching the state file, or sending a message anywhere.
+
+    Whichever of `expression` / `template` is posted gets tested, so this
+    backs three buttons: "Test expression" and "Test template" in the alert
+    editor, and the standalone expression debugger (which posts an
+    expression plus include_record=1 to also get the record it was
+    evaluated against)."""
     expression = (request.form.get('expression') or '').strip()
     template = request.form.get('template') or ''
     alert_id = (request.form.get('id') or '').strip() or 'test_alert'
@@ -596,13 +602,24 @@ def test_alert(user_id):
             value = eval(expression, {'__builtins__': worker.SAFE_BUILTINS},
                          dict(namespace))
             result['expression'] = {'triggered': bool(value),
-                                    'value': repr(value)}
+                                    'value': repr(value),
+                                    # For the debugger, where "what did this
+                                    # actually return" is the whole question
+                                    # -- a float, None, a string, ...
+                                    'type': type(value).__name__}
         except Exception as e:
             # Same outcome the service would have -- "didn't trigger" -- but
             # here the reason is the whole point, so it's reported instead of
             # only logged. A NameError is usually a typo, but can also just
             # be a field this particular record doesn't carry.
             result['expression'] = {'error': '%s: %s' % (type(e).__name__, e)}
+
+    if request.form.get('include_record'):
+        # The debugger shows what it evaluated against, so a None/NameError
+        # answer is self-explanatory: the field simply isn't in this record.
+        result['record'] = [
+            {'name': name, 'value': repr(record[name])}
+            for name in sorted(record)]
 
     if template:
         errors = []

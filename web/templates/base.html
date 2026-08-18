@@ -104,15 +104,16 @@
     padding: 0.1rem 0.4rem;
   }
   .field-chips .unit { opacity: 0.6; font-size: 0.85em; }
-  #test-result {
+  #test-result, #debug-result {
     border: 1px solid #8886;
     border-radius: 8px;
     padding: 0.6rem 0.9rem;
     margin-top: 0.75rem;
     font-size: 0.92rem;
   }
-  #test-result h3 { font-size: 0.92rem; margin: 0.8rem 0 0.3rem; }
-  #test-result p { margin: 0.35rem 0; }
+  #test-result h3, #debug-result h3 { font-size: 0.92rem; margin: 0.8rem 0 0.3rem; }
+  #test-result p, #debug-result p { margin: 0.35rem 0; }
+  #debug-result summary { cursor: pointer; font-size: 0.9em; opacity: 0.75; }
   .test-ok { color: #27ae60; }
   .test-idle { opacity: 0.75; }
   .test-error { color: #c0392b; }

@@ -144,11 +144,16 @@ sudo nginx -t && sudo systemctl reload nginx
   comment, which is what makes it safe to run this alongside a live `weewxd` with no
   locking. It never touches `state_dir`, which only the running service owns, and it never
   runs the service.
-- **Test button** (in the alert editor): evaluates the expression you've typed and renders
-  the template against your station's *latest archive record*, and reports whether the alert
-  would fire, what the message would look like, and the exact error behind any placeholder
-  that failed. Nothing is saved and no message is sent -- it's a dry run of one evaluation
-  pass. To keep the panel's answer and the service's behaviour from drifting apart, it
+- **Test expression / Test template** (in the alert editor) and the **expression
+  debugger** (its own card on the dashboard) all evaluate against your station's *latest
+  archive record*. "Test expression" says whether the alert would fire right now, "Test
+  template" shows the message it would send -- including the exact error behind any
+  placeholder that fell back to literal text. The debugger is a scratchpad instead: type any
+  expression, get back what it evaluates to (value, type, and whether that counts as true as
+  a condition) plus the record it was evaluated against, so you can check a field's current
+  value or what `to_C('outTemp')` gives you without wiring it into an alert first. Nothing
+  is saved and no message is sent -- it's a dry run of one evaluation pass. To keep the
+  panel's answer and the service's behaviour from drifting apart, it
   imports `useralerts.py` (the installed `user.useralerts` if importable, otherwise the copy
   in this checkout) and reuses its `Aggregator` / `UnitConverter` / `render_template`, so
   `avg()`, `to_C()`, `compass()` and the rest mean exactly what they mean in production. The
