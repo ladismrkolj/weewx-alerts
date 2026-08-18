@@ -99,6 +99,9 @@ document.addEventListener('DOMContentLoaded', function () {
     img.src = snapshot.preview;
     img.alt = 'The frame that would be sent with this alert';
     nodes.push(img);
+    if (snapshot.from_default) {
+      nodes.push(el('p', 'muted', 'From the station camera: ' + snapshot.url));
+    }
     var summary = snapshot.compressed
       ? kb(snapshot.original_bytes) + ' from the camera, sent as ' +
         kb(snapshot.bytes) + ' (' +
@@ -193,11 +196,14 @@ document.addEventListener('DOMContentLoaded', function () {
   // The snapshot boxes live outside the expression/template pair, so both
   // the preview and the send have to carry them along explicitly.
   function addSnapshotFields(form, params) {
-    var url = form.querySelector('[name=image_url]');
-    if (!url || !url.value.trim()) {
+    var enabled = form.querySelector('[name=image_enabled]');
+    if (!enabled || !enabled.checked) {
       return;
     }
-    params.image_url = url.value;
+    params.image_enabled = '1';
+    // Blank is meaningful: the server falls back to the station-wide
+    // default_image_url from weewx.conf.
+    params.image_url = form.querySelector('[name=image_url]').value;
     var compress = form.querySelector('[name=image_compress]');
     if (compress && compress.checked) {
       params.image_compress = '1';

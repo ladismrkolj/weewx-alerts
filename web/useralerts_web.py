@@ -370,7 +370,8 @@ def dashboard(user_id):
     if edit_id == 'new':
         edit_alert = {'id': '', 'expression': '', 'template': '', 'subject': '',
                        'channels': [], 'time_wait': DEFAULT_TIME_WAIT,
-                       'image_url': DEFAULT_IMAGE_URL, 'image_compress': True}
+                       'image_url': '', 'image_compress': True,
+                       'image_enabled': bool(DEFAULT_IMAGE_URL)}
     elif edit_id:
         edit_alert = next((a for a in cfg.get('alerts', []) if a.get('id') == edit_id), None)
 
@@ -611,7 +612,9 @@ def snapshot_from_form(form, worker):
     {'error': ...} if the camera couldn't be read. A camera failure is
     reported, never raised: the message still goes without a picture, which
     is what the service does too."""
-    url = (form.get('image_url') or '').strip()
+    if not form.get('image_enabled'):
+        return None, None
+    url = (form.get('image_url') or '').strip() or DEFAULT_IMAGE_URL.strip()
     if not url:
         return None, None
     if not hasattr(worker, 'fetch_image'):
@@ -645,6 +648,8 @@ def snapshot_from_form(form, worker):
     ext = 'jpg' if 'jpeg' in content_type or 'jpg' in content_type \
         else content_type.rsplit('/', 1)[-1] or 'jpg'
     info = {
+        'url': url,
+        'from_default': not (form.get('image_url') or '').strip(),
         'original_bytes': original_bytes,
         'bytes': len(data),
         'compressed': compressed,
@@ -853,6 +858,7 @@ def save_alert(user_id):
     template = request.form.get('template', '').strip()
     subject = request.form.get('subject', '').strip()
     image_url = request.form.get('image_url', '').strip()
+    image_enabled = bool(request.form.get('image_enabled'))
     image_compress = bool(request.form.get('image_compress'))
     image_max_width_raw = request.form.get('image_max_width', '').strip()
     image_quality_raw = request.form.get('image_quality', '').strip()
@@ -874,7 +880,8 @@ def save_alert(user_id):
         except ValueError:
             error = "time_wait must be a non-negative whole number of seconds."
 
-    if not error and image_url and not image_url.lower().startswith(('http://', 'https://')):
+    if not error and image_enabled and image_url \
+            and not image_url.lower().startswith(('http://', 'https://')):
         error = "The snapshot URL must start with http:// or https://."
     if not error and image_max_width_raw:
         try:
@@ -904,8 +911,16 @@ def save_alert(user_id):
         # Left out entirely when blank, so the alert keeps taking whatever
         # useralerts.py's default is rather than pinning today's wording.
         new_alert['subject'] = subject
-    if image_url:
-        new_alert['image_url'] = image_url
+    if not image_enabled:
+        # Written explicitly, not just left out: with a station-wide
+        # default_image_url set, "no keys" means "send the default", so
+        # opting out has to be said out loud.
+        new_alert['image_enabled'] = False
+    else:
+        if image_url:
+            # Left out when blank so the alert follows default_image_url,
+            # including if the station later points it at another camera.
+            new_alert['image_url'] = image_url
         new_alert['image_compress'] = image_compress
         if image_compress:
             # Same reasoning as subject: only stored when the user actually

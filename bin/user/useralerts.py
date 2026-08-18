@@ -145,7 +145,17 @@
 #     time and goes out with the message -- as a photo on telegram, as an
 #     attachment on email. Typically a webcam's still-frame endpoint, e.g.
 #     "http://192.168.1.47:1984/api/frame.jpeg?src=cam1" (go2rtc). Any URL
-#     that returns an image works.
+#     that returns an image works. The URL is fetched by the WeeWX host, and
+#     the image bytes are uploaded to the channel -- nothing outside your
+#     network ever sees the URL, so a LAN address is fine.
+#   - A station-wide default can be set once in weewx.conf instead of on
+#     every alert:
+#
+#         [UserAlerts]
+#             default_image_url = http://192.168.1.47:1984/api/frame.jpeg?src=cam1
+#
+#     An alert with no "image_url" of its own then sends that frame. To keep
+#     one alert picture-free, set "image_enabled": false on it.
 #   - The frame is fetched once per alert and shared by every channel, in
 #     the same background thread that does the sending, so a slow camera
 #     never holds up the archive loop.
@@ -159,6 +169,7 @@
 #     is NOT a dependency of this plugin -- without it the original bytes are
 #     sent and a debug line is logged.
 #
+#     "image_enabled": true,
 #     "image_url": "http://192.168.1.47:1984/api/frame.jpeg?src=cam1",
 #     "image_max_width": 1280,
 #     "image_quality": 70
@@ -492,12 +503,22 @@ def compress_image(data, max_width=DEFAULT_IMAGE_MAX_WIDTH,
     return out, 'image/jpeg'
 
 
-def alert_image(alert, timeout=DEFAULT_IMAGE_TIMEOUT):
+def alert_image(alert, default_url='', timeout=DEFAULT_IMAGE_TIMEOUT):
     """The snapshot to send with `alert`, as (bytes, content_type, filename),
-    or None if the alert has no image_url. Raises if the fetch itself failed
-    -- the caller decides whether that's worth aborting a send over (it
-    isn't: see _send_all)."""
-    url = (alert.get('image_url') or '').strip()
+    or None if this alert isn't sending one.
+
+    The URL is the alert's own "image_url" if it set one, else `default_url`
+    -- weewx.conf's [UserAlerts] default_image_url, so a household pointing
+    every alert at the same camera configures it once. "image_enabled":
+    false opts a single alert out of that default (an alert with no image
+    settings at all sends the default snapshot, which is the point of
+    having one).
+
+    Raises if the fetch itself failed -- the caller decides whether that's
+    worth aborting a send over (it isn't: see _send_all)."""
+    if not to_bool(alert.get('image_enabled', True)):
+        return None
+    url = (alert.get('image_url') or '').strip() or (default_url or '').strip()
     if not url:
         return None
     data, content_type = fetch_image(url, timeout)
@@ -749,6 +770,9 @@ class UserAlerts(StdService):
             return
 
         root = config_dict.get('WEEWX_ROOT', '.')
+        # Optional station-wide snapshot URL: any alert that doesn't name
+        # its own image_url attaches this one. See alert_image().
+        self.default_image_url = ua_dict.get('default_image_url', '')
         self.users_dir = os.path.join(root, ua_dict.get(
             'users_dir', 'user/useralerts/users'))
         self.state_dir = os.path.join(root, ua_dict.get(
@@ -907,11 +931,12 @@ class UserAlerts(StdService):
         image = None
         if alert:
             try:
-                image = alert_image(alert)
+                image = alert_image(alert, self.default_image_url)
             except Exception as e:
                 log.warning("UserAlerts: user '%s' alert '%s': could not fetch "
                             "the snapshot from %s (%s) -- sending without it",
-                            user_id, alert_id, alert.get('image_url'), e)
+                            user_id, alert_id,
+                            alert.get('image_url') or self.default_image_url, e)
 
         for name in channel_names:
             sender = Channels.DISPATCH.get(name)
