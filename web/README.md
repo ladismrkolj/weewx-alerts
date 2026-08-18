@@ -152,7 +152,10 @@ sudo nginx -t && sudo systemctl reload nginx
   expression, get back what it evaluates to (value, type, and whether that counts as true as
   a condition) plus the record it was evaluated against, so you can check a field's current
   value or what `to_C('outTemp')` gives you without wiring it into an alert first. Nothing
-  is saved and no message is sent -- it's a dry run of one evaluation pass. **Send test
+  is saved and no message is sent -- it's a dry run of one evaluation pass. The editor also
+  has a `subject` box (rendered as a template too, and used only by channels that have a
+  subject line -- email does, Telegram doesn't); leaving it blank stores no `subject` at
+  all, so the alert keeps taking the service's default wording. **Send test
   message** is the one button that does leave the browser: it renders the same message and
   delivers it over the channels ticked in the editor (confirming first, and reporting the
   outcome per channel), so you can see how it actually looks on your phone. It still saves

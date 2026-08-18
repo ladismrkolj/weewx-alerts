@@ -143,6 +143,9 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     if (data.template) {
       nodes.push(el('h3', null, 'Message'));
+      if (data.template.subject) {
+        nodes.push(el('p', 'muted', 'Subject (email only): ' + data.template.subject));
+      }
       nodes.push(el('pre', 'test-message', data.template.text));
       (data.template.errors || []).forEach(function (e) {
         nodes.push(el('p', 'test-error',
@@ -168,6 +171,10 @@ document.addEventListener('DOMContentLoaded', function () {
     } else {
       // Only used to render {alert_id} in a template preview.
       params.id = form.querySelector('[name=id]').value;
+      if (field === 'template') {
+        var subjectBox = form.querySelector('[name=subject]');
+        params.subject = subjectBox ? subjectBox.value : '';
+      }
     }
     btn.disabled = true;
     show(out, [el('p', 'muted', 'Evaluating…')]);
@@ -207,6 +214,9 @@ document.addEventListener('DOMContentLoaded', function () {
       nodes.push(el('p', 'muted', 'Rendered from the archive record from ' +
                                   data.record_time + '.'));
     }
+    if (data.subject) {
+      nodes.push(el('p', 'muted', 'Subject (email only): ' + data.subject));
+    }
     nodes.push(el('pre', 'test-message', data.text));
     (data.errors || []).forEach(function (e) {
       nodes.push(el('p', 'test-error',
@@ -236,9 +246,11 @@ document.addEventListener('DOMContentLoaded', function () {
       if (!window.confirm('Send this message for real over: ' + names + '?')) {
         return;
       }
+      var subjectBox = form.querySelector('[name=subject]');
       var params = new URLSearchParams({
         id: form.querySelector('[name=id]').value,
-        template: form.querySelector('[name=template]').value
+        template: form.querySelector('[name=template]').value,
+        subject: subjectBox ? subjectBox.value : ''
       });
       checked.forEach(function (c) { params.append('channels', c.value); });
       btn.disabled = true;

@@ -239,6 +239,16 @@
     <p class="muted">Long conditions can be broken across lines and indented, as in real
       code -- the expression is compiled wrapped in parentheses, so line breaks are just
       formatting.</p>
+    <label>subject
+      <textarea name="subject" rows="1" class="code-input" data-code="template"
+                spellcheck="false" autocapitalize="off" autocorrect="off"
+                autocomplete="off" wrap="off"
+                placeholder="WeeWX alert: {{ edit_alert.id or 'your-alert-id' }}">{{ edit_alert.get('subject', '') }}</textarea>
+    </label>
+    <p class="muted">Only channels that have a subject line use it -- email puts it in the
+      Subject header, Telegram has no such thing and ignores it. Left blank it defaults to
+      "WeeWX alert: &lt;id&gt;". It's a template too, so <code>{outTemp:.0f}</code> and
+      friends work here as well.</p>
     <label>template
       <textarea name="template" rows="3" required class="code-input" data-code="template"
                 spellcheck="false" autocapitalize="off" autocorrect="off"

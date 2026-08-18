@@ -362,8 +362,8 @@ def dashboard(user_id):
     edit_id = request.args.get('edit')
     edit_alert = None
     if edit_id == 'new':
-        edit_alert = {'id': '', 'expression': '', 'template': '', 'channels': [],
-                       'time_wait': DEFAULT_TIME_WAIT}
+        edit_alert = {'id': '', 'expression': '', 'template': '', 'subject': '',
+                       'channels': [], 'time_wait': DEFAULT_TIME_WAIT}
     elif edit_id:
         edit_alert = next((a for a in cfg.get('alerts', []) if a.get('id') == edit_id), None)
 
@@ -593,6 +593,15 @@ def describe_error(e, source):
     return detail
 
 
+def render_subject(subject, namespace, alert_id, worker):
+    """The subject line as the channels will see it: the alert's own subject
+    if it set one, else useralerts.py's default wording, rendered through the
+    same template language (so it can carry a reading). Only channels with a
+    notion of a subject use it -- email does, telegram doesn't."""
+    subject = subject.strip() or 'WeeWX alert: %s' % alert_id
+    return worker.render_template(subject, dict(namespace), alert_id)
+
+
 def eval_expression(expression, namespace, worker):
     """worker.eval_expression() if the loaded useralerts.py has it (it also
     makes multi-line expressions work), else the older inline eval so the
@@ -618,6 +627,7 @@ def test_alert(user_id):
     # error's line/column numbers refer to.
     expression = (request.form.get('expression') or '').strip()
     template = request.form.get('template') or ''
+    subject = request.form.get('subject') or ''
     alert_id = (request.form.get('id') or '').strip() or 'test_alert'
 
     record = latest_archive_record()
@@ -672,7 +682,9 @@ def test_alert(user_id):
             # still preview the text, just without the per-placeholder
             # reasons (a failed placeholder shows up as literal {...}).
             text = worker.render_template(template, dict(namespace), alert_id)
-        result['template'] = {'text': text, 'errors': errors}
+        result['template'] = {'text': text, 'errors': errors,
+                              'subject': render_subject(subject, namespace,
+                                                        alert_id, worker)}
 
     return jsonify(result)
 
@@ -715,8 +727,8 @@ def send_test(user_id):
         text = worker.render_template(template, dict(namespace), alert_id, errors)
     except TypeError:
         text = worker.render_template(template, dict(namespace), alert_id)
-    subject = (request.form.get('subject') or '').strip() or \
-        'WeeWX alert: %s (test)' % alert_id
+    subject = render_subject(request.form.get('subject') or '', namespace,
+                             alert_id, worker)
 
     # The saved config is where channel credentials live -- the editor form
     # only says *which* channels to use.
@@ -762,6 +774,7 @@ def save_alert(user_id):
     new_id = request.form.get('id', '').strip()
     expression = request.form.get('expression', '').strip()
     template = request.form.get('template', '').strip()
+    subject = request.form.get('subject', '').strip()
     channels = request.form.getlist('channels')
     time_wait_raw = request.form.get('time_wait', '').strip()
 
@@ -791,6 +804,10 @@ def save_alert(user_id):
         'channels': channels,
         'time_wait': time_wait,
     }
+    if subject:
+        # Left out entirely when blank, so the alert keeps taking whatever
+        # useralerts.py's default is rather than pinning today's wording.
+        new_alert['subject'] = subject
 
     existing_index = next((i for i, a in enumerate(alerts) if a.get('id') == orig_id), None) \
         if orig_id else None

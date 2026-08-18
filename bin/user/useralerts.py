@@ -138,6 +138,16 @@
 #     template placeholder); they never crash the service or affect other
 #     alerts/users.
 #
+# Subject
+#
+#   - "subject" is optional, and is used by channels that have a notion of
+#     one -- email puts it in the Subject header; telegram ignores it, since
+#     a Telegram message has no subject line. Defaults to
+#     "WeeWX alert: <alert id>".
+#   - It is rendered with the same template language as "template" below, so
+#     it can carry a reading rather than being a fixed string, e.g.
+#     "Freeze warning: {outTemp:.0f}F at {dateTime_str}".
+#
 # Template language
 #
 #   - Each {...} in a template is evaluated at send time as an expression in
@@ -705,8 +715,12 @@ class UserAlerts(StdService):
     def _dispatch(self, user_id, alert, namespace, channels_cfg):
         alert_id = alert['id']
         template = alert.get('template', 'Alert {alert_id} triggered')
-        subject = alert.get('subject', 'WeeWX alert: %s' % alert_id)
+        subject = alert.get('subject') or 'WeeWX alert: %s' % alert_id
         text = render_template(template, namespace, alert_id)
+        # The subject is a template too, so it can carry the actual reading:
+        # "Freeze warning: {outTemp:.0f}F" reads better in a mailbox than a
+        # fixed string. Same rules, same failure behaviour.
+        subject = render_template(subject, namespace, alert_id)
         channel_names = alert.get('channels', [])
 
         t = threading.Thread(
