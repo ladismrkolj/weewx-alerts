@@ -94,6 +94,12 @@ PENDING = {}
 # "no default, always paste a token by hand".
 DEFAULT_BOT_TOKEN = ''
 
+# Optional station-wide webcam snapshot URL, from weewx.conf [UserAlerts]
+# default_image_url -- pre-fills the alert editor's snapshot box, since a
+# household usually points every alert at the same camera. Blank means "no
+# default, paste a URL if you want one".
+DEFAULT_IMAGE_URL = ''
+
 # [(field_name, unit_label), ...] for every real column in the station's
 # archive table, for the expression cheatsheet -- e.g. ('outTemp', '°F').
 # None if they couldn't be determined (non-SQLite backend, unusual binding
@@ -363,7 +369,8 @@ def dashboard(user_id):
     edit_alert = None
     if edit_id == 'new':
         edit_alert = {'id': '', 'expression': '', 'template': '', 'subject': '',
-                       'channels': [], 'time_wait': DEFAULT_TIME_WAIT}
+                       'channels': [], 'time_wait': DEFAULT_TIME_WAIT,
+                       'image_url': DEFAULT_IMAGE_URL, 'image_compress': True}
     elif edit_id:
         edit_alert = next((a for a in cfg.get('alerts', []) if a.get('id') == edit_id), None)
 
@@ -377,7 +384,7 @@ def dashboard(user_id):
         default_bot_token=DEFAULT_BOT_TOKEN,
         alerts=cfg.get('alerts', []), edit_id=edit_id, edit_alert=edit_alert,
         available_channels=AVAILABLE_CHANNELS, archive_fields=ARCHIVE_FIELDS,
-        all_units=ALL_UNITS)
+        all_units=ALL_UNITS, default_image_url=DEFAULT_IMAGE_URL)
 
 
 # -- routes: telegram connect --------------------------------------------------
@@ -593,6 +600,64 @@ def describe_error(e, source):
     return detail
 
 
+def snapshot_from_form(form, worker):
+    """Fetch (and usually shrink) the snapshot the editor's form describes,
+    reusing the worker's own fetch_image()/compress_image() so the panel and
+    the service can't disagree about what actually gets sent.
+
+    Returns (image, info): `image` is the (bytes, content_type, filename)
+    tuple the channel senders take, or None; `info` is what the browser
+    shows -- the sizes, how long the camera took, and a preview -- or an
+    {'error': ...} if the camera couldn't be read. A camera failure is
+    reported, never raised: the message still goes without a picture, which
+    is what the service does too."""
+    url = (form.get('image_url') or '').strip()
+    if not url:
+        return None, None
+    if not hasattr(worker, 'fetch_image'):
+        return None, {'error': "The installed useralerts.py is older than this "
+                               "panel and doesn't support snapshots yet."}
+
+    def number(key, default):
+        raw = (form.get(key) or '').strip()
+        try:
+            return int(raw) if raw else default
+        except ValueError:
+            return default
+
+    started = time.time()
+    try:
+        data, content_type = worker.fetch_image(url)
+    except Exception as e:
+        return None, {'error': '%s: %s' % (type(e).__name__, e)}
+    fetch_ms = int((time.time() - started) * 1000)
+
+    original_bytes = len(data)
+    compressed = False
+    if form.get('image_compress'):
+        data, new_type = worker.compress_image(
+            data,
+            number('image_max_width', worker.DEFAULT_IMAGE_MAX_WIDTH),
+            number('image_quality', worker.DEFAULT_IMAGE_QUALITY))
+        compressed = new_type is not None
+        content_type = new_type or content_type
+
+    ext = 'jpg' if 'jpeg' in content_type or 'jpg' in content_type \
+        else content_type.rsplit('/', 1)[-1] or 'jpg'
+    info = {
+        'original_bytes': original_bytes,
+        'bytes': len(data),
+        'compressed': compressed,
+        'fetch_ms': fetch_ms,
+        'content_type': content_type,
+        # Inlined so the browser shows the frame that would actually be
+        # sent, not whatever the camera serves on a second request.
+        'preview': 'data:%s;base64,%s' % (content_type,
+                                          base64.b64encode(data).decode('ascii')),
+    }
+    return (data, content_type, 'snapshot.%s' % ext), info
+
+
 def render_subject(subject, namespace, alert_id, worker):
     """The subject line as the channels will see it: the alert's own subject
     if it set one, else useralerts.py's default wording, rendered through the
@@ -685,6 +750,11 @@ def test_alert(user_id):
         result['template'] = {'text': text, 'errors': errors,
                               'subject': render_subject(subject, namespace,
                                                         alert_id, worker)}
+        # Previewing the message includes previewing the picture that would
+        # ride along with it -- including how big it ends up after shrinking.
+        _, snapshot = snapshot_from_form(request.form, worker)
+        if snapshot:
+            result['snapshot'] = snapshot
 
     return jsonify(result)
 
@@ -735,6 +805,8 @@ def send_test(user_id):
     cfg = load_json(user_path(user_id)) or {}
     channels_cfg = cfg.get('channels', {})
 
+    image, snapshot = snapshot_from_form(request.form, worker)
+
     sent = []
     for name in channels:
         sender = worker.Channels.DISPATCH.get(name)
@@ -750,13 +822,18 @@ def send_test(user_id):
         try:
             # Synchronous, unlike the service's background thread: the whole
             # point of a test send is to find out whether it worked.
-            sender(chan_cfg, subject, text)
+            try:
+                sender(chan_cfg, subject, text, image)
+            except TypeError:
+                # An older installed useralerts.py whose senders take no
+                # image: send the message itself rather than nothing.
+                sender(chan_cfg, subject, text)
             sent.append({'channel': name, 'ok': True})
         except Exception as e:
             sent.append({'channel': name, 'error': '%s: %s' % (type(e).__name__, e)})
 
     return jsonify({'ok': True, 'text': text, 'errors': errors, 'sent': sent,
-                    'subject': subject,
+                    'subject': subject, 'snapshot': snapshot,
                     'record_time': time.strftime('%Y-%m-%d %H:%M:%S',
                                                  time.localtime(record['dateTime']))
                     if 'dateTime' in record else None})
@@ -775,6 +852,10 @@ def save_alert(user_id):
     expression = request.form.get('expression', '').strip()
     template = request.form.get('template', '').strip()
     subject = request.form.get('subject', '').strip()
+    image_url = request.form.get('image_url', '').strip()
+    image_compress = bool(request.form.get('image_compress'))
+    image_max_width_raw = request.form.get('image_max_width', '').strip()
+    image_quality_raw = request.form.get('image_quality', '').strip()
     channels = request.form.getlist('channels')
     time_wait_raw = request.form.get('time_wait', '').strip()
 
@@ -793,6 +874,21 @@ def save_alert(user_id):
         except ValueError:
             error = "time_wait must be a non-negative whole number of seconds."
 
+    if not error and image_url and not image_url.lower().startswith(('http://', 'https://')):
+        error = "The snapshot URL must start with http:// or https://."
+    if not error and image_max_width_raw:
+        try:
+            if int(image_max_width_raw) < 1:
+                raise ValueError
+        except ValueError:
+            error = "Snapshot width must be a whole number of pixels."
+    if not error and image_quality_raw:
+        try:
+            if not 1 <= int(image_quality_raw) <= 95:
+                raise ValueError
+        except ValueError:
+            error = "Snapshot JPEG quality must be a whole number between 1 and 95."
+
     if error:
         flash(error, 'error')
         return redirect(url_for('dashboard', user_id=user_id, edit=orig_id or 'new'))
@@ -808,6 +904,16 @@ def save_alert(user_id):
         # Left out entirely when blank, so the alert keeps taking whatever
         # useralerts.py's default is rather than pinning today's wording.
         new_alert['subject'] = subject
+    if image_url:
+        new_alert['image_url'] = image_url
+        new_alert['image_compress'] = image_compress
+        if image_compress:
+            # Same reasoning as subject: only stored when the user actually
+            # chose a number, so the defaults stay the service's to change.
+            if image_max_width_raw:
+                new_alert['image_max_width'] = int(image_max_width_raw)
+            if image_quality_raw:
+                new_alert['image_quality'] = int(image_quality_raw)
 
     existing_index = next((i for i, a in enumerate(alerts) if a.get('id') == orig_id), None) \
         if orig_id else None
@@ -836,6 +942,7 @@ def delete_alert(user_id):
 
 def main():
     global USERS_DIR, DEFAULT_BOT_TOKEN, ARCHIVE_FIELDS, ALL_UNITS, ARCHIVE_DB
+    global DEFAULT_IMAGE_URL
 
     parser = argparse.ArgumentParser(description="UserAlerts config web panel")
     parser.add_argument('--config', dest='config_path', metavar='CONFIG_FILE',
@@ -856,6 +963,7 @@ def main():
     USERS_DIR = os.path.join(root, ua_dict.get('users_dir', 'user/useralerts/users'))
     os.makedirs(USERS_DIR, exist_ok=True)
     DEFAULT_BOT_TOKEN = ua_dict.get('default_telegram_bot_token', '')
+    DEFAULT_IMAGE_URL = ua_dict.get('default_image_url', '')
 
     host = args.host or web_dict.get('host', '0.0.0.0')
     port = args.port or int(web_dict.get('port', 8081))

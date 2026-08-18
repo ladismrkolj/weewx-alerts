@@ -254,6 +254,33 @@
                 spellcheck="false" autocapitalize="off" autocorrect="off"
                 autocomplete="off" wrap="off">{{ edit_alert.template }}</textarea>
     </label>
+    <label>snapshot image URL (optional)
+      <input type="text" name="image_url" value="{{ edit_alert.get('image_url', '') }}"
+             placeholder="{{ default_image_url or 'http://192.168.1.47:1984/api/frame.jpeg?src=cam1' }}">
+    </label>
+    <p class="muted">A still frame fetched when the alert fires and sent with the message --
+      a photo on Telegram, an attachment on email. Any URL that returns an image works; a
+      go2rtc/frigate box serves one at
+      <code>http://&lt;host&gt;:1984/api/frame.jpeg?src=&lt;camera&gt;</code>. If the camera
+      is down or slow the message still goes, just without the picture.</p>
+    <label class="checkbox">
+      <input type="checkbox" name="image_compress"
+             {% if edit_alert.get('image_compress', True) %}checked{% endif %}> shrink before sending
+    </label>
+    <div class="image-opts">
+      <label>max width (px)
+        <input type="number" name="image_max_width" min="1" step="1"
+               value="{{ edit_alert.get('image_max_width', '') }}" placeholder="1280">
+      </label>
+      <label>JPEG quality
+        <input type="number" name="image_quality" min="1" max="95" step="1"
+               value="{{ edit_alert.get('image_quality', '') }}" placeholder="70">
+      </label>
+    </div>
+    <p class="muted">Shrinking needs Pillow on the WeeWX host
+      (<code>pip install pillow</code>); without it the camera's own bytes are sent and
+      nothing breaks. Blank boxes mean the defaults (1280px wide, quality 70).</p>
+
     <fieldset>
       <legend>channels</legend>
       {% for ch in available_channels %}

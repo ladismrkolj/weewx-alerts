@@ -80,6 +80,34 @@ document.addEventListener('DOMContentLoaded', function () {
     return nodes;
   }
 
+  function kb(bytes) {
+    return (bytes / 1024).toFixed(bytes < 10240 ? 1 : 0) + ' kB';
+  }
+
+  // What the snapshot box in the editor produced: the frame itself, plus
+  // what it cost -- how long the camera took and what shrinking saved.
+  function snapshotNodes(snapshot) {
+    var nodes = [el('h3', null, 'Snapshot')];
+    if (snapshot.error) {
+      nodes.push(el('p', 'test-error',
+                    'Camera failed: ' + snapshot.error +
+                    ' -- the message would still be sent, without a picture.'));
+      return nodes;
+    }
+    var img = document.createElement('img');
+    img.className = 'snapshot-preview';
+    img.src = snapshot.preview;
+    img.alt = 'The frame that would be sent with this alert';
+    nodes.push(img);
+    var summary = snapshot.compressed
+      ? kb(snapshot.original_bytes) + ' from the camera, sent as ' +
+        kb(snapshot.bytes) + ' (' +
+        Math.round(100 - snapshot.bytes * 100 / snapshot.original_bytes) + '% smaller)'
+      : kb(snapshot.bytes) + ', sent as-is';
+    nodes.push(el('p', 'muted', summary + ' -- camera took ' + snapshot.fetch_ms + ' ms.'));
+    return nodes;
+  }
+
   function recordDetails(record) {
     var details = document.createElement('details');
     details.appendChild(el('summary', null,
@@ -153,10 +181,29 @@ document.addEventListener('DOMContentLoaded', function () {
                       ') -- it stays in the message as literal text.'));
       });
     }
+    if (data.snapshot) {
+      snapshotNodes(data.snapshot).forEach(function (n) { nodes.push(n); });
+    }
     if (!nodes.length || (!data.expression && !data.template)) {
       nodes.push(el('p', 'muted', "Nothing to test -- that box is empty."));
     }
     return nodes;
+  }
+
+  // The snapshot boxes live outside the expression/template pair, so both
+  // the preview and the send have to carry them along explicitly.
+  function addSnapshotFields(form, params) {
+    var url = form.querySelector('[name=image_url]');
+    if (!url || !url.value.trim()) {
+      return;
+    }
+    params.image_url = url.value;
+    var compress = form.querySelector('[name=image_compress]');
+    if (compress && compress.checked) {
+      params.image_compress = '1';
+      params.image_max_width = form.querySelector('[name=image_max_width]').value;
+      params.image_quality = form.querySelector('[name=image_quality]').value;
+    }
   }
 
   function run(btn) {
@@ -174,6 +221,7 @@ document.addEventListener('DOMContentLoaded', function () {
       if (field === 'template') {
         var subjectBox = form.querySelector('[name=subject]');
         params.subject = subjectBox ? subjectBox.value : '';
+        addSnapshotFields(form, params);
       }
     }
     btn.disabled = true;
@@ -223,6 +271,9 @@ document.addEventListener('DOMContentLoaded', function () {
                     '{' + e.field + '} failed (' + e.error +
                     ') -- it stays in the message as literal text.'));
     });
+    if (data.snapshot) {
+      snapshotNodes(data.snapshot).forEach(function (n) { nodes.push(n); });
+    }
     (data.sent || []).forEach(function (r) {
       nodes.push(r.ok
         ? el('p', 'test-ok', 'Sent via ' + r.channel + '.')
@@ -247,11 +298,13 @@ document.addEventListener('DOMContentLoaded', function () {
         return;
       }
       var subjectBox = form.querySelector('[name=subject]');
-      var params = new URLSearchParams({
+      var fields = {
         id: form.querySelector('[name=id]').value,
         template: form.querySelector('[name=template]').value,
         subject: subjectBox ? subjectBox.value : ''
-      });
+      };
+      addSnapshotFields(form, fields);
+      var params = new URLSearchParams(fields);
       checked.forEach(function (c) { params.append('channels', c.value); });
       btn.disabled = true;
       show(out, [el('p', 'muted', 'Sending…')]);
