@@ -67,6 +67,7 @@ header comment for the full schema, expression language, and template language r
       "id": "freeze_warning",
       "expression": "outTemp < 32.0",
       "template": "Freeze warning! outTemp={outTemp:.1f}F at {dateTime_str}",
+      "subject": "Freeze warning: {outTemp:.0f}F",
       "channels": ["telegram"],
       "time_wait": 3600
     },
@@ -90,6 +91,10 @@ The second alert shows three things worth knowing:
   NNE/ENE/... too.
 - Each `{...}` is a full expression, not just a field name, so `A if cond else B` gives you
   if/else in a message -- e.g. `{'Overnight' if hour >= 22 or hour < 6 else 'Daytime'} gust`.
+
+`subject` is optional and rendered with the same template language as `template`. Only
+channels that have a subject line use it -- email puts it in the Subject header, Telegram
+has no such thing and ignores it. Left out, it defaults to `WeeWX alert: <id>`.
 
 If you do put a string literal in a template, prefer **single** quotes, as in that last
 example. A template is not JSON-aware; it's just the string you store. Inside a JSON file

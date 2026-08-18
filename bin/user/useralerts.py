@@ -120,6 +120,15 @@
 #       to_kts('windGust') is not None and to_kts('windGust') > 25 and 6 <= hour < 20
 #     (If your station's archive schema happens to have a field with one of
 #     these names, the real field wins and the time value is not injected.)
+#   - An expression may span several lines: it is compiled wrapped in
+#     parentheses, so a long condition can be broken up and indented the way
+#     it would be in real code --
+#         7 <= hour < 19
+#             and avg('windGust', 30) is not None
+#             and avg('windGust', 30, unit='knot') > 2
+#     is the same as writing it all on one line. (In a users/<id>.json file
+#     the line breaks have to be written as \n, since JSON strings can't
+#     contain a literal newline; typed into the web panel they're just typed.)
 #   - dateTime_str (human readable time of the record) and alert_id are
 #     injected for template placeholders only -- they are NOT available in
 #     "expression". The raw dateTime field is available in both.
@@ -128,6 +137,16 @@
 #     pass (in "expression") or left as the literal "{original text}" (in a
 #     template placeholder); they never crash the service or affect other
 #     alerts/users.
+#
+# Subject
+#
+#   - "subject" is optional, and is used by channels that have a notion of
+#     one -- email puts it in the Subject header; telegram ignores it, since
+#     a Telegram message has no subject line. Defaults to
+#     "WeeWX alert: <alert id>".
+#   - It is rendered with the same template language as "template" below, so
+#     it can carry a reading rather than being a fixed string, e.g.
+#     "Freeze warning: {outTemp:.0f}F at {dateTime_str}".
 #
 # Template language
 #
@@ -469,6 +488,26 @@ def _split_field_spec(content):
     return content, None
 
 
+def eval_expression(expression, namespace):
+    """Evaluate one alert expression against `namespace`, with only
+    SAFE_BUILTINS available.
+
+    The expression is wrapped in parentheses before compiling, which is what
+    lets it span several lines: bare
+
+        outTemp < 32
+            and windSpeed > 10
+
+    is an IndentationError to Python, but inside parentheses -- exactly like
+    a long condition wrapped across lines in real code -- it's just one
+    expression. Wrapping changes nothing else: any expression in parentheses
+    is the same expression. Exceptions propagate to the caller, which
+    decides what a failure means (the service: "didn't trigger"; the web
+    panel's debugger: the thing to show you)."""
+    code = compile('(\n%s\n)' % expression, '<expression>', 'eval')
+    return eval(code, {'__builtins__': SAFE_BUILTINS}, namespace)
+
+
 def render_template(template, namespace, alert_id, errors=None):
     """Render a template string. Each {...} placeholder is evaluated as a
     Python expression against `namespace` (record fields + avg/amin/amax/
@@ -508,14 +547,18 @@ def render_template(template, namespace, alert_id, errors=None):
             content = template[i + 1:end]
             expr, spec = _split_field_spec(content)
             try:
-                value = eval(expr, {'__builtins__': SAFE_BUILTINS}, ns)
+                value = eval_expression(expr, ns)
                 out.append(format(value, spec) if spec else str(value))
             except Exception as e:
                 log.debug("Alert '%s': template field '{%s}' failed: %s",
                           alert_id, content, e)
                 if errors is not None:
+                    # e.msg for a SyntaxError: str() would append
+                    # "(<expression>, line 2)", which is about the wrapper
+                    # eval_expression() compiles, not the user's text.
+                    message = e.msg if isinstance(e, SyntaxError) else e
                     errors.append({'field': content,
-                                   'error': '%s: %s' % (type(e).__name__, e)})
+                                   'error': '%s: %s' % (type(e).__name__, message)})
                 out.append('{' + content + '}')
             i = end + 1
         else:
@@ -632,9 +675,7 @@ class UserAlerts(StdService):
                 namespace.setdefault(key, value)
 
         try:
-            triggered = bool(eval(expression,
-                                   {'__builtins__': SAFE_BUILTINS},
-                                   namespace))
+            triggered = bool(eval_expression(expression, namespace))
         except NameError as e:
             # Record is missing a field the expression needs -- not an
             # error, just can't evaluate this pass.
@@ -674,8 +715,12 @@ class UserAlerts(StdService):
     def _dispatch(self, user_id, alert, namespace, channels_cfg):
         alert_id = alert['id']
         template = alert.get('template', 'Alert {alert_id} triggered')
-        subject = alert.get('subject', 'WeeWX alert: %s' % alert_id)
+        subject = alert.get('subject') or 'WeeWX alert: %s' % alert_id
         text = render_template(template, namespace, alert_id)
+        # The subject is a template too, so it can carry the actual reading:
+        # "Freeze warning: {outTemp:.0f}F" reads better in a mailbox than a
+        # fixed string. Same rules, same failure behaviour.
+        subject = render_template(subject, namespace, alert_id)
         channel_names = alert.get('channels', [])
 
         t = threading.Thread(

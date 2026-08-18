@@ -362,8 +362,8 @@ def dashboard(user_id):
     edit_id = request.args.get('edit')
     edit_alert = None
     if edit_id == 'new':
-        edit_alert = {'id': '', 'expression': '', 'template': '', 'channels': [],
-                       'time_wait': DEFAULT_TIME_WAIT}
+        edit_alert = {'id': '', 'expression': '', 'template': '', 'subject': '',
+                       'channels': [], 'time_wait': DEFAULT_TIME_WAIT}
     elif edit_id:
         edit_alert = next((a for a in cfg.get('alerts', []) if a.get('id') == edit_id), None)
 
@@ -564,6 +564,53 @@ def build_namespace(record):
     return namespace
 
 
+def describe_error(e, source):
+    """Turn an exception from an expression into something a code editor
+    would show: the message, and for a SyntaxError the line and column it
+    points at, plus that line of the user's own source.
+
+    eval_expression() compiles the expression wrapped in "(\n...\n)", so a
+    SyntaxError's lineno is one more than the line the user actually typed
+    -- undone here, since the whole point is to point at their text."""
+    detail = {'error': '%s: %s' % (type(e).__name__, e)}
+    if isinstance(e, SyntaxError):
+        # e.msg, not str(e): str() tacks on "(<expression>, line 2)", which
+        # duplicates the line/column reported separately below.
+        detail['error'] = '%s: %s' % (type(e).__name__, e.msg)
+        lines = source.splitlines()
+        lineno = (e.lineno or 1) - 1          # unwrap the leading "(\n"
+        # An error at the very end (e.g. a trailing operator) is reported
+        # against the wrapper's closing ")" line -- point at the last line
+        # the user actually typed instead.
+        lineno = max(1, min(lineno, len(lines)))
+        if lines:
+            detail['lineno'] = lineno
+            detail['line'] = lines[lineno - 1]
+            if e.offset:
+                # Clamp: the wrapper's closing "\n)" can put the caret one
+                # past the end of the real line.
+                detail['offset'] = max(1, min(e.offset, len(detail['line']) + 1))
+    return detail
+
+
+def render_subject(subject, namespace, alert_id, worker):
+    """The subject line as the channels will see it: the alert's own subject
+    if it set one, else useralerts.py's default wording, rendered through the
+    same template language (so it can carry a reading). Only channels with a
+    notion of a subject use it -- email does, telegram doesn't."""
+    subject = subject.strip() or 'WeeWX alert: %s' % alert_id
+    return worker.render_template(subject, dict(namespace), alert_id)
+
+
+def eval_expression(expression, namespace, worker):
+    """worker.eval_expression() if the loaded useralerts.py has it (it also
+    makes multi-line expressions work), else the older inline eval so the
+    panel still works against an out-of-date installed copy."""
+    if hasattr(worker, 'eval_expression'):
+        return worker.eval_expression(expression, namespace)
+    return eval(expression, {'__builtins__': worker.SAFE_BUILTINS}, namespace)
+
+
 @app.route('/u/<user_id>/alerts/test', methods=['POST'])
 def test_alert(user_id):
     """Evaluate an expression and/or render a template against the latest
@@ -575,8 +622,12 @@ def test_alert(user_id):
     editor, and the standalone expression debugger (which posts an
     expression plus include_record=1 to also get the record it was
     evaluated against)."""
+    # Only the outer whitespace goes: newlines and indentation inside a
+    # multi-line expression are the user's formatting, and are what the
+    # error's line/column numbers refer to.
     expression = (request.form.get('expression') or '').strip()
     template = request.form.get('template') or ''
+    subject = request.form.get('subject') or ''
     alert_id = (request.form.get('id') or '').strip() or 'test_alert'
 
     record = latest_archive_record()
@@ -599,8 +650,7 @@ def test_alert(user_id):
 
     if expression:
         try:
-            value = eval(expression, {'__builtins__': worker.SAFE_BUILTINS},
-                         dict(namespace))
+            value = eval_expression(expression, dict(namespace), worker)
             result['expression'] = {'triggered': bool(value),
                                     'value': repr(value),
                                     # For the debugger, where "what did this
@@ -612,7 +662,7 @@ def test_alert(user_id):
             # here the reason is the whole point, so it's reported instead of
             # only logged. A NameError is usually a typo, but can also just
             # be a field this particular record doesn't carry.
-            result['expression'] = {'error': '%s: %s' % (type(e).__name__, e)}
+            result['expression'] = describe_error(e, expression)
 
     if request.form.get('include_record'):
         # The debugger shows what it evaluated against, so a None/NameError
@@ -632,9 +682,84 @@ def test_alert(user_id):
             # still preview the text, just without the per-placeholder
             # reasons (a failed placeholder shows up as literal {...}).
             text = worker.render_template(template, dict(namespace), alert_id)
-        result['template'] = {'text': text, 'errors': errors}
+        result['template'] = {'text': text, 'errors': errors,
+                              'subject': render_subject(subject, namespace,
+                                                        alert_id, worker)}
 
     return jsonify(result)
+
+
+@app.route('/u/<user_id>/alerts/send_test', methods=['POST'])
+def send_test(user_id):
+    """Render the template against the latest archive record and actually
+    send it over the channels ticked in the editor, reporting the outcome
+    per channel.
+
+    Deliberately separate from /alerts/test (which only ever previews):
+    this one leaves the browser and puts a message on someone's phone, so
+    it hangs off its own button rather than happening as a side effect of
+    testing. Nothing is saved either way -- the alert doesn't have to exist
+    yet, and its cooldown/state is untouched, so a test send never counts
+    as the real alert having fired."""
+    template = request.form.get('template') or ''
+    alert_id = (request.form.get('id') or '').strip() or 'test_alert'
+    channels = request.form.getlist('channels')
+
+    if not template.strip():
+        return jsonify({'ok': False, 'error': 'Nothing to send -- the template is empty.'})
+    if not channels:
+        return jsonify({'ok': False,
+                        'error': 'No channels ticked -- tick at least one to send a test.'})
+
+    record = latest_archive_record()
+    if record is None:
+        return jsonify({'ok': False,
+                        'error': "No archive record to render against -- couldn't read "
+                                 "the station database, or it has no rows yet."})
+    try:
+        namespace = build_namespace(record)
+        worker = worker_module()
+    except RuntimeError as e:
+        return jsonify({'ok': False, 'error': str(e)})
+
+    errors = []
+    try:
+        text = worker.render_template(template, dict(namespace), alert_id, errors)
+    except TypeError:
+        text = worker.render_template(template, dict(namespace), alert_id)
+    subject = render_subject(request.form.get('subject') or '', namespace,
+                             alert_id, worker)
+
+    # The saved config is where channel credentials live -- the editor form
+    # only says *which* channels to use.
+    cfg = load_json(user_path(user_id)) or {}
+    channels_cfg = cfg.get('channels', {})
+
+    sent = []
+    for name in channels:
+        sender = worker.Channels.DISPATCH.get(name)
+        if sender is None:
+            sent.append({'channel': name, 'error': 'Unknown channel.'})
+            continue
+        chan_cfg = channels_cfg.get(name)
+        if not chan_cfg:
+            sent.append({'channel': name,
+                         'error': "Not set up yet -- no connection settings saved for "
+                                  "this channel."})
+            continue
+        try:
+            # Synchronous, unlike the service's background thread: the whole
+            # point of a test send is to find out whether it worked.
+            sender(chan_cfg, subject, text)
+            sent.append({'channel': name, 'ok': True})
+        except Exception as e:
+            sent.append({'channel': name, 'error': '%s: %s' % (type(e).__name__, e)})
+
+    return jsonify({'ok': True, 'text': text, 'errors': errors, 'sent': sent,
+                    'subject': subject,
+                    'record_time': time.strftime('%Y-%m-%d %H:%M:%S',
+                                                 time.localtime(record['dateTime']))
+                    if 'dateTime' in record else None})
 
 
 # -- routes: alert CRUD --------------------------------------------------------
@@ -649,6 +774,7 @@ def save_alert(user_id):
     new_id = request.form.get('id', '').strip()
     expression = request.form.get('expression', '').strip()
     template = request.form.get('template', '').strip()
+    subject = request.form.get('subject', '').strip()
     channels = request.form.getlist('channels')
     time_wait_raw = request.form.get('time_wait', '').strip()
 
@@ -678,6 +804,10 @@ def save_alert(user_id):
         'channels': channels,
         'time_wait': time_wait,
     }
+    if subject:
+        # Left out entirely when blank, so the alert keeps taking whatever
+        # useralerts.py's default is rather than pinning today's wording.
+        new_alert['subject'] = subject
 
     existing_index = next((i for i, a in enumerate(alerts) if a.get('id') == orig_id), None) \
         if orig_id else None
