@@ -250,10 +250,39 @@
       <input type="number" name="time_wait" min="0" value="{{ edit_alert.time_wait }}">
     </label>
     <button type="submit">Save</button>
+    <button type="button" class="btn-secondary js-test" data-test="expression"
+            data-test-url="{{ url_for('test_alert', user_id=user_id) }}">Test expression</button>
+    <button type="button" class="btn-secondary js-test" data-test="template"
+            data-test-url="{{ url_for('test_alert', user_id=user_id) }}">Test template</button>
     <a class="btn-secondary" href="{{ url_for('dashboard', user_id=user_id) }}">Cancel</a>
   </form>
+  <p class="muted">Both test buttons run against your station's most recent archive record --
+    "Test expression" says whether the alert would fire right now, "Test template" shows the
+    message it would send. Nothing is saved and no message is sent.</p>
+  <div id="test-result" hidden></div>
 </section>
 {% endif %}
+
+<section class="card">
+  <h2>Expression debugger</h2>
+  <p class="muted">A scratchpad for the expression language: type anything and see what it
+    evaluates to against the latest archive record -- a number, a bool, <code>None</code>, a
+    string, or the error it raised. Handy for checking a field's current value
+    (<code>outTemp</code>), what a conversion gives you (<code>to_C('outTemp')</code>),
+    whether an aggregate has any data (<code>avg('windSpeed', 30)</code>), or just what
+    <code>hour</code> is right now -- before wiring any of it into an alert. Nothing here is
+    saved.</p>
+  <form id="debug-form" onsubmit="return false;">
+    <label>expression
+      <textarea name="expression" rows="2"
+                placeholder="to_kts('windGust')"></textarea>
+    </label>
+    <button type="button" class="js-test" data-test="expression" data-debug="1"
+            data-test-url="{{ url_for('test_alert', user_id=user_id) }}"
+            data-result="debug-result">Evaluate</button>
+  </form>
+  <div id="debug-result" hidden></div>
+</section>
 
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 {% endblock %}

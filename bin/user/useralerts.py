@@ -469,7 +469,7 @@ def _split_field_spec(content):
     return content, None
 
 
-def render_template(template, namespace, alert_id):
+def render_template(template, namespace, alert_id, errors=None):
     """Render a template string. Each {...} placeholder is evaluated as a
     Python expression against `namespace` (record fields + avg/amin/amax/
     asum + to_C/to_F/to_kts/to_mps/convert -- the same namespace used for
@@ -479,7 +479,12 @@ def render_template(template, namespace, alert_id):
     }} are literal braces, like str.format(). If a placeholder's expression
     raises (missing field, bad syntax, ...), that placeholder is left as
     the literal "{original text}" rather than raising, so one bad field
-    never crashes the whole send."""
+    never crashes the whole send.
+
+    If `errors` is a list, every placeholder that failed is appended to it as
+    {'field': <original text>, 'error': <message>} -- used by the web panel's
+    "Test" button to show *why* a placeholder came back as literal text.
+    Nothing in the service itself passes it."""
     ns = dict(namespace)
     ns['alert_id'] = alert_id
     if 'dateTime' in ns:
@@ -508,6 +513,9 @@ def render_template(template, namespace, alert_id):
             except Exception as e:
                 log.debug("Alert '%s': template field '{%s}' failed: %s",
                           alert_id, content, e)
+                if errors is not None:
+                    errors.append({'field': content,
+                                   'error': '%s: %s' % (type(e).__name__, e)})
                 out.append('{' + content + '}')
             i = end + 1
         else:
